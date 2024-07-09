@@ -2,7 +2,9 @@
 #include <PseudoMazor.h>
 #include <U8g2lib.h>
 #include <NewTone.h>
-///#include <NewPing.h> //questionable library but this will do for now
+#include <PinChangeInterrupt.h>
+#include <PinChangeInterruptBoards.h>
+#include <NewPing.h> //questionable library but this will do for now
 
 /* 
 This code is our "last resort" entry for polymaze 2024, hence the name "pseudomazor", later called handicap7100, the real mazor is based on an 
@@ -26,7 +28,13 @@ hardware design to experiment with code and behaviour before improving hardware 
 
 //
 
+//Command Defs=================================================================
+#define oprint(text) oled.print(text)
+#define ocursor(x,y) oled.setCursor(x,y)
+#define oimage(x,y,w,h,img) oled.drawBitmap(0,0,w,h,img)
 
+//Other =======================================================================
+void writeRGB(byte r,byte g,byte b);
 //Telemetry magic
 int left_encoder_counts;
 unsigned long last_Left_Count_Millis;
@@ -52,29 +60,30 @@ void rightISR()
 
 
 //Distance retrieval ======================================================================
-#define moving_average_iterations 2
+#define moving_average_iterations 3
 
-//void getDistances();
-//void getDistancesIterable();
 void getDistancesRaw();
-//void pingDistances();
 
 int left_distance;
 int right_distance;
 int front_distance;
 
-int last_left_distance;
-int last_right_distance;
-int last_front_distance;
+int front_threshold; //minima
+int left_threshold; //maxima
+int right_threshold; //maxima
+
+int front_maxima;
+int left_minima;
+int right_minima;
 
 unsigned long distance_buffer;
 
 byte distance_buffer_state=1; //can't be null
 byte median_iterations=3; //to be used later
 
-unsigned long left_distance_buffer[moving_average_iterations];
-unsigned long right_distance_buffer[moving_average_iterations];
-unsigned long front_distance_buffer[moving_average_iterations];
+int left_distance_buffer[moving_average_iterations];
+int right_distance_buffer[moving_average_iterations];
+int front_distance_buffer[moving_average_iterations];
 
 unsigned long left_distance_sum;
 unsigned long right_distance_sum;
@@ -84,9 +93,9 @@ byte moving_average_index = 0;
 byte moving_average_start = 0;
 byte iterable_index=0;
 
-//NewPing frontSonar(center_ultrasonic_sensor_trigger_pin,center_ultrasonic_sensor_echo_pin,120);
-//NewPing rightSonar(right_ultrasonic_sensor_trigger_pin,right_ultrasonic_sensor_echo_pin,120);
-//NewPing leftSonar(left_ultrasonic_sensor_trigger_pin,left_ultrasonic_sensor_echo_pin,120);
+NewPing frontSonar(center_ultrasonic_sensor_trigger_pin,center_ultrasonic_sensor_echo_pin,120);
+NewPing rightSonar(right_ultrasonic_sensor_trigger_pin,right_ultrasonic_sensor_echo_pin,120);
+NewPing leftSonar(left_ultrasonic_sensor_trigger_pin,left_ultrasonic_sensor_echo_pin,120);
 
 
 
@@ -97,13 +106,17 @@ void travelToTarget(int distance_in_mm);
 void turn(byte direction); //helpful for when the maze has been optimized ig ? 
 void performTravel();
 
+void turnUntilClear();
+void moveUntilClear();
+
+
 bool isTraveling;
 int travel_target=0;
 
-int base_speed=80;
+int base_speed=70;
 unsigned long speed_time_instance; //let's hope the calculations don't throw this off balance . . . 
 unsigned long PID_interval;
-double speed_Kp=0.50 ; //maybe turn these variables to floats if it takes a gazillion seconds to compute ?
+double speed_Kp=3 ; //maybe turn these variables to floats if it takes a gazillion seconds to compute ?
 double speed_Ki=0.00; //probably won't be used ?
 double speed_Kd=-0.00;
 double speed_integral;
@@ -123,17 +136,11 @@ unsigned long display_interval;
 
 String serial_buffer;
 
-void testYALL();
 void analyzeSerial();
 
 
 //IO Dayz ====================================================================================
 U8G2_SSD1306_128X64_NONAME_F_HW_I2C oled(U8G2_R0);
-
-#define beep_single       0
-#define beep_single_long  1
-#define beep_quick_pulses 2
-#define beep_slow_pulses  3
 
 unsigned long beep_time_reference;
 byte beep_count;
@@ -141,10 +148,6 @@ byte beep_target;
 int beep_delay;
 bool is_beeping;
 bool beep_state;
-
-//void beep(byte beep_mode);
-//void performAudioFeedback();
-
 
 //Audio Core
 #define sound(freq) NewTone(Buzzer,freq)
@@ -174,7 +177,7 @@ int sound_sets[sound_IDs][sound_partitions]={
 {560},                  //scroll down 1
 {780,1290},             //inc 2
 {1290,780},             //dec 3
-{1000,760},             //boot 4
+{1000,760,800},             //boot 4
 {1000,840},             //shut down 5
 {560},                  //home 6
 {1033,0,1033},          //edit 7
@@ -193,7 +196,7 @@ unsigned long soundMillis[sound_IDs][sound_partitions]={
 ,{180}                      //scroll down 1
 ,{120,80}                   //inc 2
 ,{120,80}                   //dec 3
-,{300,200}                  //boot 4
+,{300,200,300}                  //boot 4
 ,{200,300}                  //shut down 5
 ,{160}                      //home 6
 ,{150,150,150}              //edit 7
@@ -268,105 +271,27 @@ void performAudioFeedback()
             if(sound_partition_index>sound_set_width[sound_ID]){isSounding=0;}
     }else
     {
-        sound(0);
         noNewTone(Buzzer);
         audioConflict=1;
     }
 }
 
 
+
+
 // Functions=======================
-
-//the distances are passed through a running mean (moving average) filter, I played smart z3ma by implementing a rolling barrel style algorithm rather than offseting the values in the arrays one by one :) 
-// void getDistances() //it's recommended to use this periodically so the PID system has some predictible behaviour
-// {
-//   right_distance_buffer[moving_average_index] = rightSonar.ping_median(median_iterations)*0.17;
-//   left_distance_buffer[moving_average_index]  = leftSonar.ping_median(median_iterations)*0.17;
-//   front_distance_buffer[moving_average_index] = frontSonar.ping_median(median_iterations)*0.17;
-  
-//   if(distance_buffer_state>moving_average_iterations)
-//   {
-    
-//     left_distance_sum+=-left_distance_buffer[moving_average_start]+left_distance_buffer[moving_average_index];
-//     left_distance = left_distance_sum/moving_average_iterations;
-
-//     right_distance_sum+=-right_distance_buffer[moving_average_start]+right_distance_buffer[moving_average_index];
-//     right_distance = right_distance_sum/moving_average_iterations;
-
-//     front_distance_sum+=-front_distance_buffer[moving_average_start]+front_distance_buffer[moving_average_index];
-//     front_distance = front_distance_sum/moving_average_iterations;
-
-//     moving_average_start==(moving_average_iterations-1)?moving_average_start=0:moving_average_start++;
-//   }else
-//   {
-//       if(distance_buffer_state==moving_average_iterations){moving_average_start++;} //because we need ~~10~~ 5 sums and as the moving average resets we offset the start index by one and keep cycling the two after
-
-//       left_distance_sum+=left_distance_buffer[moving_average_index];
-//       right_distance_sum+=right_distance_buffer[moving_average_index];
-//       front_distance_sum+=front_distance_buffer[moving_average_index];
-
-//       left_distance  = left_distance_sum/distance_buffer_state;
-//       right_distance = right_distance_sum/distance_buffer_state;
-//       front_distance = front_distance_sum/distance_buffer_state;
-
-//       distance_buffer_state++; //this variable just checks if we filled the buffer or not, it's not that important anyways but it helps with persistant behaviour men démarrage ga3.
-//   } 
-  
-//   moving_average_index==(moving_average_iterations-1)?moving_average_index=0:moving_average_index++;
-// }
-
-
-// void getDistancesIterable() //it's recommended to use this periodically so the PID system has some predictible behaviour
-// {
-//   if(moving_average_index==moving_average_start){moving_average_start++;}
-//   switch(iterable_index){
-//     case 0:
-//     right_distance_buffer[moving_average_index] = rightSonar.ping_median(median_iterations)*0.17;
-//     right_distance_sum+=-right_distance_buffer[moving_average_start]+right_distance_buffer[moving_average_index];
-//     right_distance = right_distance_sum/moving_average_iterations;
-//     iterable_index++;
-//     break;
-
-//     case 1:
-//     left_distance_buffer[moving_average_index]  = leftSonar.ping_median(median_iterations)*0.17;
-//     left_distance_sum+=-left_distance_buffer[moving_average_start]+left_distance_buffer[moving_average_index];
-//     left_distance = left_distance_sum/moving_average_iterations;
-//     iterable_index++;
-//     break;
-
-//     case 2:
-//     front_distance_buffer[moving_average_index] = frontSonar.ping_median(median_iterations)*0.17;
-//     front_distance_sum+=-front_distance_buffer[moving_average_start]+front_distance_buffer[moving_average_index];
-//     front_distance = front_distance_sum/moving_average_iterations;
-
-//     moving_average_start>=(moving_average_iterations-1)?moving_average_start=0:moving_average_start++;
-//     moving_average_index>=(moving_average_iterations-1)?moving_average_index=0:moving_average_index++;
-//     iterable_index=0;
-//     break;
-//   }
-// }
-
 void getDistancesRaw() //remove that distance buffer stuff, it's useless now . . . 
 {
+  distance_time=millis();
   if(moving_average_index==moving_average_start){moving_average_start++;}
-  delay(5);
-  digitalWrite(right_ultrasonic_sensor_trigger_pin,1);
-  delayMicroseconds(10);
-  digitalWrite(right_ultrasonic_sensor_trigger_pin,0);
-  right_distance_buffer[moving_average_index] = pulseIn(right_ultrasonic_sensor_echo_pin,1,5000)*0.17;
-  // distance_buffer==0?right_distance_buffer[moving_average_index] = right_distance:right_distance_buffer[moving_average_index]=distance_buffer;
-  delay(5);
-  digitalWrite(left_ultrasonic_sensor_trigger_pin,1);
-  delayMicroseconds(10);
-  digitalWrite(left_ultrasonic_sensor_trigger_pin,0);
-  left_distance_buffer[moving_average_index]=pulseIn(left_ultrasonic_sensor_echo_pin,1,5000)*0.17;
-  //distance_buffer==0?left_distance_buffer[moving_average_index] = left_distance:left_distance_buffer[moving_average_index]=distance_buffer;
-  delay(5);
-  digitalWrite(center_ultrasonic_sensor_trigger_pin,1);
-  delayMicroseconds(10);
-  digitalWrite(center_ultrasonic_sensor_trigger_pin,0);
-  front_distance_buffer[moving_average_index]=pulseIn(center_ultrasonic_sensor_echo_pin,1,5000)*0.17;
-  //distance_buffer==0?front_distance_buffer[moving_average_index] = front_distance:front_distance_buffer[moving_average_index]=distance_buffer;
+
+  delay(3);
+  right_distance_buffer[moving_average_index] = (int)rightSonar.ping()*0.17;
+  delay(3);
+  left_distance_buffer[moving_average_index]= (int)leftSonar.ping()*0.17;
+  delay(3);
+
+  front_distance_buffer[moving_average_index]= (int)frontSonar.ping()*0.17;
 
   left_distance_sum+=-left_distance_buffer[moving_average_start]+left_distance_buffer[moving_average_index];
   left_distance = left_distance_sum/moving_average_iterations;
@@ -379,15 +304,8 @@ void getDistancesRaw() //remove that distance buffer stuff, it's useless now . .
 
   moving_average_start==(moving_average_iterations-1)?moving_average_start=0:moving_average_start++;
   moving_average_index==(moving_average_iterations-1)?moving_average_index=0:moving_average_index++;
+  distance_time=millis()-distance_time;
 } 
-
-// void pingDistances()
-// {
-//   left_distance=leftSonar.ping_median(median_iterations)*0.17;
-//   right_distance=rightSonar.ping_median(median_iterations)*0.17;
-//   front_distance=frontSonar.ping_median(median_iterations)*0.17;
-// }
-
 
 
 void setDirection(byte dir=dir_forward)
@@ -399,64 +317,48 @@ void setDirection(byte dir=dir_forward)
     digitalWrite(left_motor_negative_pin,0);
     digitalWrite(right_motor_positive_pin,1);
     digitalWrite(right_motor_negative_pin,0);
-    // PORTL&=B11110000; 
-    // PORTL|=B00001010;
     break;
   case dir_U_left:
     digitalWrite(left_motor_positive_pin,0);
     digitalWrite(left_motor_negative_pin,1);
     digitalWrite(right_motor_positive_pin,1);
     digitalWrite(right_motor_negative_pin,0);
-    // PORTL&=B11110000; 
-    // PORTL|=B00000110;
     break;
   case dir_U_right:
     digitalWrite(left_motor_positive_pin,1);
     digitalWrite(left_motor_negative_pin,0);
     digitalWrite(right_motor_positive_pin,0);
     digitalWrite(right_motor_negative_pin,1);
-    // PORTL&=B11110000; 
-    // PORTL|=B00001001;
     break;
   case dir_C_left:
     digitalWrite(left_motor_positive_pin,0);
     digitalWrite(left_motor_negative_pin,0);
     digitalWrite(right_motor_positive_pin,1);
     digitalWrite(right_motor_negative_pin,0);
-    // PORTL&=B11110000; 
-    // PORTL|=B00000010;
     break;
   case dir_C_right:
     digitalWrite(left_motor_positive_pin,1);
     digitalWrite(left_motor_negative_pin,0);
     digitalWrite(right_motor_positive_pin,0);
     digitalWrite(right_motor_negative_pin,0);
-    // PORTL&=B11110000; 
-    // PORTL|=B00001000;
     break;
   case dir_reverse:
     digitalWrite(left_motor_positive_pin,0);
     digitalWrite(left_motor_negative_pin,1);
     digitalWrite(right_motor_positive_pin,0);
     digitalWrite(right_motor_negative_pin,1);
-    // PORTL&=B11110000; 
-    // PORTL|=B00000101;
     break;
   case dir_break:
     digitalWrite(left_motor_positive_pin,1);
     digitalWrite(left_motor_negative_pin,1);
     digitalWrite(right_motor_positive_pin,1);
     digitalWrite(right_motor_negative_pin,1);
-    // PORTL&=B11110000; 
-    // PORTL|=B00001111;
     break;
   case dir_stop:
     digitalWrite(left_motor_positive_pin,0);
     digitalWrite(left_motor_negative_pin,0);
     digitalWrite(right_motor_positive_pin,0);
     digitalWrite(right_motor_negative_pin,0);
-    // PORTL&=B11110000; 
-    // PORTL|=B00000000;
     break;
   }
 }
@@ -480,134 +382,24 @@ void setSpeed() //positive is right negative is left for direction and vice vers
  speed_time_instance = micros();
 }
 
-void testYALL()
-{
-  switch (testing_counter)
-  {
-  case 0: //Travel test (move 30cm and back)
-      isTesting=1;
-      setDirection(dir_forward);
-      left_encoder_counts=0;right_encoder_counts=0;
-      while((left_encoder_counts+right_encoder_counts)/2<=(int)distance_to_encoder_counts(66))
-      {
-        oled.clearBuffer();
-        oled.setCursor(5,7);
-        oled.print("Target is:");
-        oled.print((int)distance_to_encoder_counts(66));
-        oled.setCursor(5,18);
-        oled.print("We're currently at:");
-        oled.setCursor(5,26);
-        oled.print("L:");
-        oled.print(left_encoder_counts);
-        oled.print(" R:");
-        oled.print(right_encoder_counts);
-        oled.setCursor(5,26+8);
-        oled.print(" tot:");
-        oled.print((left_encoder_counts+right_encoder_counts)/2);
-        oled.sendBuffer();
-        digitalWrite(motor_standby_pin,1);
-        analogWrite(left_motor_pwm_pin,100);
-        analogWrite(right_motor_pwm_pin,100);
-      }
-      setDirection(dir_stop);
-      digitalWrite(motor_standby_pin,0);
-      delay(1000);
-      left_encoder_counts=0;right_encoder_counts=0;
-      setDirection(dir_reverse);
-      while((left_encoder_counts+right_encoder_counts)/2<=(int)distance_to_encoder_counts(66))
-      {
-        oled.clearBuffer();
-        oled.setCursor(5,7);
-        oled.print("Target is:");
-        oled.print((int)distance_to_encoder_counts(66));
-        oled.setCursor(5,18);
-        oled.print("We're currently at:");
-        oled.setCursor(5,26);
-        oled.print("L:");
-        oled.print(left_encoder_counts);
-        oled.print(" R:");
-        oled.print(right_encoder_counts);
-        oled.setCursor(5,26+8);
-        oled.print(" tot:");
-        oled.print((left_encoder_counts+right_encoder_counts)/2);
-        oled.sendBuffer();
-        digitalWrite(motor_standby_pin,1);
-        analogWrite(left_motor_pwm_pin,100);
-        analogWrite(right_motor_pwm_pin,100);
-      }
-      setDirection(dir_stop);
-      digitalWrite(motor_standby_pin,0);
-      analogWrite(left_motor_pwm_pin,0);
-      analogWrite(right_motor_pwm_pin,0);
-      digitalWrite(Buzzer,1);
-      delay(600);
-      digitalWrite(Buzzer,0);
-    break;
-  case 1: //Direction tests
-      setDirection(dir_forward);
-      digitalWrite(motor_standby_pin,1);
-      analogWrite(left_motor_pwm_pin,100);
-      analogWrite(right_motor_pwm_pin,100);
-      for(int i=0;i<=7;i++)
-      {
-      setDirection(i);
-      delay(650);
-      }
-      digitalWrite(motor_standby_pin,0);
-      analogWrite(left_motor_pwm_pin,0);
-      analogWrite(right_motor_pwm_pin,0);
-    break;
-  case 2: //PID and response test
-    break;
-  case 3: //Distance and IR test
-    break;
-  case 4: //IO test
-    break;
-  case 5: //Buzzer x LED test
-    break;
-  case 6: //Color Sensor Test
-    break;
-  
-  default:
-  digitalWrite(Buzzer,1);
-  delay(1000);
-  digitalWrite(Buzzer,0);
-  isTesting=0;
-    break;
-  }
-  testing_counter++;
-}
-
 void analyzeSerial()
 {
-  // Serial.print(F("\n\n\n\n\n\nLeft Sonar reading:"));
-  // Serial.print(leftSonar.ping_cm());
-  // Serial.print(F("\nRight Sonar reading:"));
-  // Serial.print(rightSonar.ping_cm());
-  // Serial.print(F("\nFront Sonar reading:"));
-  // Serial.print(frontSonar.ping_cm());
-
   if(Serial.available()>=2)
   {
-    // serial_buffer=Serial.readString();
-    // char command = serial_buffer.charAt(0);
     char *command; 
     Serial.readBytes(command,1);
     switch (*command)
     {
     case 'p':
-      // speed_Kp=serial_buffer.substring(1).toInt();
       speed_Kp=Serial.parseFloat();
       Serial.print("New Kp is:");
       Serial.println(speed_Kp);
-      //beep(beep_quick_pulses);
       break;
 
     case 'd':
       speed_Kd=Serial.parseFloat();
       Serial.print("New Kd is:");
       Serial.println(speed_Kd);
-      //beep(beep_quick_pulses);
       break;
 
     case 'S':
@@ -615,22 +407,18 @@ void analyzeSerial()
       base_speed = constrain(base_speed,0,255);
       Serial.print("New speed is:");
       Serial.println(base_speed);
-      //beep(beep_quick_pulses);
       break;
 
     case 'M':
       verbose=!verbose;
-      //beep(beep_quick_pulses);
       break;
     
     default:
-      //beep(beep_single_long);
       Serial.println("Didn't understand command");
       break;
     }
     Serial.flush();
   }
-
   if(verbose)
   {
     unsigned long t =millis(); //plotting the PID response . . .
@@ -686,31 +474,247 @@ void display()
   }
 }
 
+#define turning_mode 1
+#define forward_mode 0
+bool travel_mode;
+
 void travelToTarget(int distance_in_mm)
 {
   if(!isTraveling)
   {
+    travel_mode=forward_mode;
     isTraveling=1;
     left_encoder_counts=0;
     right_encoder_counts=0;
-    travel_target=distance_to_encoder_counts(distance_in_mm);
+    travel_target=distance_to_encoder_counts((int)distance_in_mm);
   }
-
 }
 
+void turnToTarget(int target_angle)
+{
+  if(!isTraveling)
+  {
+    travel_mode=turning_mode;
+    isTraveling=1;
+    left_encoder_counts=0;
+    right_encoder_counts=0;
+    travel_target=angle_to_encoder_counts((int)target_angle);
+  }
+}
+
+#define move_until_clear_mode 0
+#define block_mapping_mode 1
+
+byte robot_mode=1;
+bool isOffsetting;
 void performTravel()
 {
-  if(isTraveling)
+
+  switch (robot_mode)
   {
-    if((left_encoder_counts+right_encoder_counts)/2>=travel_target)
+  case move_until_clear_mode:
+  if(travel_mode==forward_mode){
+    setSpeed();
+    if(front_distance<=front_threshold||left_distance>=left_threshold||right_distance>=right_threshold) //move until clear lol
+    {
+      setDirection(dir_break);
+      isTraveling=0;
+    }
+  }else
+  {
+    analogWrite(left_motor_pwm_pin,base_speed);
+    analogWrite(right_motor_pwm_pin,base_speed);
+    turnUntilClear();
+  }
+    break;
+  
+  default:
+    if(isTraveling)
+  {
+    if((!travel_mode?  ( left_encoder_counts>=travel_target  ||  right_encoder_counts>=travel_target ) : (((left_encoder_counts+right_encoder_counts)/2)   >=travel_target))/* || (!isOffsetting&&travel_mode==forward_mode&&((front_distance<front_threshold&&front_distance>10)||(left_distance>left_threshold&&left_distance>15)||(right_distance>right_threshold&&right_distance>20)))*/)
     {
       //beep(beep_single_long);
       setDirection(dir_break);
       isTraveling=0;
     }
   }
+    break;
+  }
+
 }
 
+#define turning_left 0
+#define turning_right 1
+
+byte turning_direction;
+
+void turnUntilClear() //travel mode must be turning
+{
+  if(front_distance>=front_maxima)
+  { 
+  setDirection(dir_break);
+  isTraveling=0;
+  }else
+  if(turning_direction == turning_left && left_distance<=left_minima)
+  {
+  setDirection(dir_break);
+  isTraveling=0;
+  }else
+  if(turning_direction == turning_right && right_distance<=right_minima)
+  {
+  setDirection(dir_break);
+  isTraveling=0;
+  }
+  
+}
+
+void writeRGB(byte r,byte g,byte b)
+{
+  analogWrite(R_LED,255-r);
+  analogWrite(G_LED,255-g);
+  analogWrite(B_LED,255-b);
+}
+
+bool isInConfiguration;
+byte configuration_index;
+void configureThresholds()
+{
+  isInConfiguration=1;
+  while(isInConfiguration)
+  {
+    getDistancesRaw();
+    oled.clearBuffer();
+    switch (configuration_index)
+    {
+    case 0:
+    ocursor(5,7);
+    oprint("front Distance:");
+    oprint(front_distance);
+
+      break;
+    
+        case 1:
+    ocursor(5,7);
+    oprint("right Distance:");
+    oprint(right_distance);
+
+      break;
+
+        case 2:
+    ocursor(5,7);
+    oprint("left Distance:");
+    oprint(left_distance);
+      break;
+    
+            case 3:
+    ocursor(5,7);
+    oprint("left minima:");
+    oprint(left_minima);
+          break;
+            case 4:
+    ocursor(5,7);
+    oprint("right minima:");
+    oprint(right_minima);
+          break;
+            case 5:
+    ocursor(5,7);
+    oprint("front maxima:");
+    oprint(front_maxima);
+          break;
+    
+    default:
+
+
+    isInConfiguration=0;
+      break;
+    } 
+    if(isInConfiguration){
+    ocursor(5,20);
+    oprint("press green button to configure");}else
+    {
+          oled.clearBuffer();
+          ocursor(5,7);
+          oprint("The configured thresholds:");
+          ocursor(5,16);
+          oprint("front:");
+          oprint(front_threshold);
+          ocursor(5,26);
+          oprint("right:");
+          oprint(right_threshold);
+          ocursor(5,36);
+          oprint("left:");
+          oprint(left_threshold);
+          delay(3000);
+    }
+    oled.sendBuffer();
+    performAudioFeedback();
+  }
+}
+
+bool run;
+
+unsigned long right_button_interval;
+unsigned long left_button_interval;
+unsigned long center_button_interval;
+
+void left_button_ISR(void)
+{
+    if(millis()-left_button_interval>=100)
+    {
+      writeRGB(0,100,100);
+      play_audio(audio_button_push);
+      left_button_interval = millis();
+    }
+}
+void right_button_ISR(void)
+{
+    if(millis()-right_button_interval>=100)
+    {
+      writeRGB(100,100,0);
+      if(isInConfiguration)
+      {
+        
+       switch (configuration_index)
+       {
+       case 0:
+        front_threshold=front_distance;
+        break;
+       case 1:
+        right_threshold=right_distance;
+        break;
+        case 2:
+        left_threshold=left_distance;
+        break;
+                case 3:
+        left_minima=left_distance;
+        break;
+                case 4:
+        right_minima=right_distance;
+        break;
+                case 5:
+        front_maxima=front_distance;
+        break;
+       }
+       configuration_index++; 
+      }
+      play_audio(audio_button_push);
+      right_button_interval = millis();
+    }
+}
+
+void middle_button_ISR(void)
+{
+    if(millis()-center_button_interval>=100)
+    {
+      if(run){run=0;}else{run=1;}
+      writeRGB(80,100,200);
+      play_audio(audio_button_push);
+      center_button_interval = millis();
+    }
+}
+
+
+int distance_counts;
 
 //boring hardcoded dayz ======================================================================
 void setup()  
@@ -729,13 +733,20 @@ void setup()
   pinMode(R_LED,OUTPUT);
   pinMode(G_LED,OUTPUT);
   pinMode(B_LED,OUTPUT);
+  pinMode(right_button_pin,INPUT_PULLUP);
+  pinMode(left_button_pin,INPUT_PULLUP);
+  pinMode(middle_button_pin,INPUT_PULLUP);
 
   //interrupts and stuff
   attachInterrupt(digitalPinToInterrupt(left_motor_encoder_pin),leftISR,FALLING);
   attachInterrupt(digitalPinToInterrupt(right_motor_encoder_pin),rightISR,FALLING);
-
-  Serial.begin(19200);   //intialize the serial monitor baud rate
-  Serial.println("Serial initialized");
+  attachPCINT(digitalPinToPCINT(left_button_pin),left_button_ISR,FALLING);
+  attachPCINT(digitalPinToPCINT(right_button_pin),right_button_ISR,FALLING);
+  attachPCINT(digitalPinToPCINT(middle_button_pin),middle_button_ISR,FALLING);
+  
+  writeRGB(0,0,0);
+  //Serial.begin(19200);   //intialize the serial monitor baud rate
+  //Serial.println("Serial initialized");
   oled.begin();
   oled.setFont(u8g2_font_squeezed_b6_tr);
 
@@ -743,50 +754,132 @@ void setup()
   while(isSounding){
   play_audio(audio_boot);
   performAudioFeedback();}
+
+  //configureThresholds();
 }
 
-int distance_counts;
+bool turnB;
+
+int lastLeftDistance;
+int lastRightDistance;
+int lastFrontDistance;
 
 void loop()
 {
+  if(run){
   digitalWrite(motor_standby_pin,1);
+  // analogWrite(left_motor_pwm_pin,base_speed);
+  // analogWrite(right_motor_pwm_pin,base_speed);
 
-  if(!isTraveling&& distance_counts<5){
-    play_audio(audio_button_push);
-  //beep(beep_quick_pulses);
-  travelToTarget(300);
-  distance_counts++;
-  }
-  if(isTraveling){
-  if(front_distance <50  && front_distance > 5){  setDirection(dir_break);}else{  setDirection(dir_forward);} 
+  // if(!isTraveling&& distance_counts<5){
+  // play_audio(audio_button_push);
+  // travelToTarget(300);
+  // distance_counts++;
+  // }
+  // if(isTraveling){
+  // if(front_distance <50  && front_distance > 5){  setDirection(dir_break);}else{  setDirection(dir_forward);} 
 
+  // if(isTraveling==1)
+  // compute_time=millis();
+  // setSpeed();
+  // digitalWrite(motor_standby_pin,1);
+  // compute_time=millis()-compute_time;
+  // }else{digitalWrite(motor_standby_pin,0);}
 
-  
-
-  if(isTraveling==1)
-  compute_time=millis();
-  setSpeed();
-  digitalWrite(motor_standby_pin,1);
-  compute_time=millis()-compute_time;
-  }else{digitalWrite(motor_standby_pin,0);}
-
-
-
-
-  distance_time=millis();
   getDistancesRaw();
-  distance_time=millis()-distance_time;
+  // if(left_distance<=20){left_distance=lastLeftDistance;}
+  // if(right_distance<=20){right_distance=lastRightDistance;}
+  // if(front_distance<=10){front_distance=lastFrontDistance;}
+  // lastLeftDistance=left_distance;
+  // lastRightDistance=right_distance;
+  // lastFrontDistance=front_distance;
+  if(!isTraveling)
+  {
 
+    setDirection(dir_stop);
+    delay(250);
+    play_audio(audio_button_push);
+    // if(left_distance>=left_threshold)
+    // {
+
+    // analogWrite(left_motor_pwm_pin,base_speed+20);
+    // analogWrite(right_motor_pwm_pin,base_speed+20);
+    // setDirection(dir_U_left);
+    // turnToTarget(80); //Add L
+    // }
+    
+    //else
+     if(front_distance>=front_threshold) //Add F
+    {
+    travelToTarget(300);
+    setDirection(dir_forward);
+    }
+    
+    // else if(right_distance>=right_threshold) //Add R
+    // {
+
+    // analogWrite(left_motor_pwm_pin,base_speed);
+    // analogWrite(right_motor_pwm_pin,base_speed);
+    // setDirection(dir_U_right);
+    // turnToTarget(80); //Add L
+    // }
+    
+    // else //Add U
+    // {
+    //     analogWrite(left_motor_pwm_pin,base_speed);
+    //     analogWrite(right_motor_pwm_pin,base_speed);
+    //     setDirection(dir_U_left);
+    //     turnToTarget(200); //Add L
+    // }
+  }
   
-  // if(left_distance<=10){left_distance=100;}
-  // if(right_distance<=10){right_distance=100;}
-  // last_right_distance=right_distance;
-  // last_left_distance=left_distance;
-  // last_front_distance=front_distance;
 
+  // if(travel_mode=forward_mode&&front_distance<=front_threshold){isTraveling=0;setDirection(dir_break);}
+  if(travel_mode==forward_mode)
+  {
+  setSpeed();
+  }
+
+  // if(!isTraveling)
+  // {
+  //   delay(500);
+  //   play_audio(audio_value_inc);
+  //   if(left_distance>=left_threshold)
+  //   {
+  //     isTraveling=1;
+  //     travel_mode=turning_mode;
+  //     turning_direction = turning_left;
+  //     setDirection(dir_U_left);
+  //   }else
+  //   if(front_distance>=front_threshold)
+  //   {
+  //     isTraveling=1;
+  //     travel_mode==forward_mode;
+  //     setDirection(dir_forward);
+  //   }else
+  //   if(right_distance>=right_threshold)
+  //   {
+  //     isTraveling=1;
+  //     travel_mode=turning_mode;
+  //     turning_direction=turning_right;
+  //     setDirection(dir_U_right);
+  //   }else
+  //   {
+  //     isTraveling=1;
+  //     travel_mode=turning_mode;
+  //     turning_direction = turning_left;
+  //     setDirection(dir_U_left);
+  //   }
+  // }
+
+
+  }else
+  {
+    digitalWrite(motor_standby_pin,0);
+  }
   performTravel();
   display();
-  analyzeSerial();
+  //analyzeSerial();
   performAudioFeedback();
 
 }
