@@ -382,6 +382,72 @@ void setSpeed() //positive is right negative is left for direction and vice vers
  speed_time_instance = micros();
 }
 
+int left_speed=80;
+double speed_error_left;
+unsigned long speed_time_instance_left;
+int left_maxima=150;
+int adjustment_left;
+double speed_integral_left;
+
+void setSpeedLeft()
+{
+  double d_error_left = (micros()-speed_time_instance_left)*0.000001;
+
+  double error_left = map(constrain(left_distance,left_minima,left_maxima/*12*/),left_minima,left_maxima,-left_speed,left_speed);
+
+  speed_integral_left = speed_integral_left + error_left*d_error_left;
+  d_error_left = (error_left-speed_error_left)/d_error_left;
+
+  if(adjustment_left<0)
+  {
+    digitalWrite(left_motor_positive_pin,0);
+    digitalWrite(left_motor_negative_pin,1);
+  }else
+  {
+    digitalWrite(left_motor_positive_pin,1);
+    digitalWrite(left_motor_negative_pin,0);
+  }
+  adjustment_left = abs(adjustment_left);
+  analogWrite(left_motor_pwm_pin,constrain(adjustment,0,255));
+
+
+  speed_error_left = error_left;
+  speed_time_instance_left = micros();
+} 
+
+int right_speed=80;
+double speed_error_right;
+unsigned long speed_time_instance_right;
+int right_maxima=150;
+int adjustment_right;
+double speed_integral_right;
+
+void setSpeedRight()
+{
+  double d_error_right = (micros()-speed_time_instance_right)*0.000001;
+
+  double error_right = map(constrain(right_distance,right_minima,right_maxima/*12*/),right_minima,right_maxima,-right_speed,right_speed);
+
+  speed_integral_right = speed_integral_left + error_right*d_error_right;
+  d_error_right = (error_right-speed_error_right)/d_error_right;
+
+  if(adjustment_right<0)
+  {
+    digitalWrite(right_motor_positive_pin,0);
+    digitalWrite(right_motor_negative_pin,1);
+  }else
+  {
+    digitalWrite(right_motor_positive_pin,1);
+    digitalWrite(right_motor_negative_pin,0);
+  }
+  adjustment_left = abs(adjustment_left);
+  analogWrite(right_motor_pwm_pin,constrain(adjustment,0,255));
+
+
+  speed_error_right = error_right;
+  speed_time_instance_right = micros();
+} 
+
 void analyzeSerial()
 {
   if(Serial.available()>=2)
@@ -714,6 +780,11 @@ void middle_button_ISR(void)
 }
 
 
+void detectColor()
+{
+
+}
+
 int distance_counts;
 
 //boring hardcoded dayz ======================================================================
@@ -758,6 +829,7 @@ void setup()
   //configureThresholds();
 }
 
+
 bool turnB;
 
 int lastLeftDistance;
@@ -768,118 +840,16 @@ void loop()
 {
   if(run){
   digitalWrite(motor_standby_pin,1);
-  // analogWrite(left_motor_pwm_pin,base_speed);
-  // analogWrite(right_motor_pwm_pin,base_speed);
 
-  // if(!isTraveling&& distance_counts<5){
-  // play_audio(audio_button_push);
-  // travelToTarget(300);
-  // distance_counts++;
-  // }
-  // if(isTraveling){
-  // if(front_distance <50  && front_distance > 5){  setDirection(dir_break);}else{  setDirection(dir_forward);} 
-
-  // if(isTraveling==1)
-  // compute_time=millis();
-  // setSpeed();
-  // digitalWrite(motor_standby_pin,1);
-  // compute_time=millis()-compute_time;
-  // }else{digitalWrite(motor_standby_pin,0);}
-
-  getDistancesRaw();
-  // if(left_distance<=20){left_distance=lastLeftDistance;}
-  // if(right_distance<=20){right_distance=lastRightDistance;}
-  // if(front_distance<=10){front_distance=lastFrontDistance;}
-  // lastLeftDistance=left_distance;
-  // lastRightDistance=right_distance;
-  // lastFrontDistance=front_distance;
-  if(!isTraveling)
-  {
-
-    setDirection(dir_stop);
-    delay(250);
-    play_audio(audio_button_push);
-    // if(left_distance>=left_threshold)
-    // {
-
-    // analogWrite(left_motor_pwm_pin,base_speed+20);
-    // analogWrite(right_motor_pwm_pin,base_speed+20);
-    // setDirection(dir_U_left);
-    // turnToTarget(80); //Add L
-    // }
-    
-    //else
-     if(front_distance>=front_threshold) //Add F
-    {
-    travelToTarget(300);
-    setDirection(dir_forward);
-    }
-    
-    // else if(right_distance>=right_threshold) //Add R
-    // {
-
-    // analogWrite(left_motor_pwm_pin,base_speed);
-    // analogWrite(right_motor_pwm_pin,base_speed);
-    // setDirection(dir_U_right);
-    // turnToTarget(80); //Add L
-    // }
-    
-    // else //Add U
-    // {
-    //     analogWrite(left_motor_pwm_pin,base_speed);
-    //     analogWrite(right_motor_pwm_pin,base_speed);
-    //     setDirection(dir_U_left);
-    //     turnToTarget(200); //Add L
-    // }
-  }
-  
-
-  // if(travel_mode=forward_mode&&front_distance<=front_threshold){isTraveling=0;setDirection(dir_break);}
-  if(travel_mode==forward_mode)
-  {
-  setSpeed();
-  }
-
-  // if(!isTraveling)
-  // {
-  //   delay(500);
-  //   play_audio(audio_value_inc);
-  //   if(left_distance>=left_threshold)
-  //   {
-  //     isTraveling=1;
-  //     travel_mode=turning_mode;
-  //     turning_direction = turning_left;
-  //     setDirection(dir_U_left);
-  //   }else
-  //   if(front_distance>=front_threshold)
-  //   {
-  //     isTraveling=1;
-  //     travel_mode==forward_mode;
-  //     setDirection(dir_forward);
-  //   }else
-  //   if(right_distance>=right_threshold)
-  //   {
-  //     isTraveling=1;
-  //     travel_mode=turning_mode;
-  //     turning_direction=turning_right;
-  //     setDirection(dir_U_right);
-  //   }else
-  //   {
-  //     isTraveling=1;
-  //     travel_mode=turning_mode;
-  //     turning_direction = turning_left;
-  //     setDirection(dir_U_left);
-  //   }
-  // }
-
+  if(travel_mode==forward_mode){setSpeedRight();setSpeedLeft();}
 
   }else
   {
     digitalWrite(motor_standby_pin,0);
   }
+  
   performTravel();
   display();
-  //analyzeSerial();
   performAudioFeedback();
 
 }
