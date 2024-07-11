@@ -5,6 +5,7 @@
 #include <PinChangeInterrupt.h>
 #include <PinChangeInterruptBoards.h>
 #include <NewPing.h> //questionable library but this will do for now
+#include <menu.h>
 
 /* 
 This code is our "last resort" entry for polymaze 2024, hence the name "pseudomazor", later called handicap7100, the real mazor is based on an 
@@ -34,6 +35,15 @@ hardware design to experiment with code and behaviour before improving hardware 
 #define oimage(x,y,w,h,img) oled.drawBitmap(0,0,w,h,img)
 
 //Other =======================================================================
+#define Adjusted_operation 0
+#define PID1_operation 1
+#define PID2_operation 2
+#define Telemetry_operation 3
+#define PID_Telemetry_operation 4
+#define No_operation 5
+
+byte operation_mode=No_operation;
+
 void writeRGB(byte r,byte g,byte b);
 //Telemetry magic
 int left_encoder_counts;
@@ -73,6 +83,7 @@ int left_threshold; //maxima
 int right_threshold; //maxima
 
 int front_maxima;
+int front_minima;
 int left_minima;
 int right_minima;
 
@@ -124,6 +135,11 @@ double speed_integral;
 int speed_error;
 int speed;
 int adjustment;
+
+float motor_bias_left;
+float motor_bias_right;
+
+int block_size;
 
 //Testing debuggy days ===============================================================================
 byte testing_counter;
@@ -499,47 +515,6 @@ void analyzeSerial()
   }
 }
 
-void display()
-{
-  if(millis()-display_interval>=250){
-  oled.clearBuffer();
-  oled.setCursor(5,7);
-  oled.print("Front Sonar:");
-  oled.print(front_distance);
-  oled.setCursor(5,15);
-  oled.print("Right Sonar:");
-  oled.print(right_distance);
-  oled.setCursor(5,23);
-  oled.print("Left Sonar:");
-  oled.print(left_distance);
-
-  oled.setCursor(5,30);
-  oled.print("Battery mV:");
-  oled.print(analogRead(VBat_pin)*0.009786-1.4);
-
-  oled.setCursor(5,37);
-  oled.print("PID error:");
-  oled.print(speed_error);
-
-  oled.setCursor(5,50);
-  oled.print("Left Encoder");
-  oled.print(left_encoder_counts);
-
-  oled.setCursor(5,58);
-  oled.print("Right Encoder:");
-  oled.print(right_encoder_counts);
-
-  oled.setCursor(96,62);
-  oled.print(compute_time);
-
-  oled.setCursor(96,7);
-  oled.print(distance_time);
-
-  oled.sendBuffer();
-  display_interval = millis();
-  }
-}
-
 #define turning_mode 1
 #define forward_mode 0
 bool travel_mode;
@@ -634,6 +609,71 @@ void turnUntilClear() //travel mode must be turning
   
 }
 
+
+int redFrequency = 0;
+int blueFrequency = 0;
+
+byte redThreshold = 150;
+byte blueThreshold = 100;
+
+void detectColor()
+{
+  digitalWrite(color_sensor_s2_pin, LOW);
+  digitalWrite(color_sensor_s3_pin, LOW);
+  redFrequency = pulseIn(color_sensor_output_pin, LOW);
+  redFrequency = map(redFrequency, 25, 72, 255, 0); // Adjust mapping as necessary
+
+  // Read blue component
+  digitalWrite(color_sensor_s2_pin, LOW);
+  digitalWrite(color_sensor_s3_pin, HIGH);
+  blueFrequency = pulseIn(color_sensor_output_pin, LOW);
+  blueFrequency = map(blueFrequency, 25, 70, 255, 0); // Adjust mapping as necessary
+
+  // Determine which color is detected and control the LED accordingly
+  if (redFrequency > redThreshold && redFrequency > blueFrequency) {
+    analogWrite(R_LED, 255);
+    analogWrite(B_LED, 0);
+  } else if (blueFrequency > blueThreshold && blueFrequency > redFrequency) {
+    analogWrite(R_LED, 0);
+    analogWrite(B_LED, 255);
+  } else {
+    // Ensure LEDs are off
+    analogWrite(R_LED, 255);
+    analogWrite(B_LED, 255);
+  }
+}
+
+int left_IR_maximum=0;
+int left_IR_minimum=1024;
+int right_IR_maximum=0;
+int right_IR_minimum=1024;
+bool isCalibratingIR;
+
+void calibrateIR()
+{
+  int IR_Buffer = analogRead(left_IR);
+  if(IR_Buffer>left_IR_maximum){left_IR_maximum=IR_Buffer;}
+  if(IR_Buffer<left_IR_minimum){left_IR_minimum=IR_Buffer;}
+
+  IR_Buffer = analogRead(right_IR);
+  if(IR_Buffer>right_IR_maximum){right_IR_maximum=IR_Buffer;}
+  if(IR_Buffer<right_IR_minimum){right_IR_minimum=IR_Buffer;}
+}
+//This shit is for when the end is ending ! >:(
+bool isEnded;
+
+void detectEnd()
+{
+  int left_IR_reading=analogRead(left_IR);
+  int right_IR_reading=analogRead(right_IR);
+  if(left_IR_reading>=left_IR_minimum&&left_IR_reading<=left_IR_maximum&&right_IR_reading>=right_IR_minimum&&right_IR_reading<=right_IR_maximum)
+  {
+    isEnded=1;
+  }
+}
+
+int distance_counts;
+
 void writeRGB(byte r,byte g,byte b)
 {
   analogWrite(R_LED,255-r);
@@ -723,69 +763,868 @@ unsigned long right_button_interval;
 unsigned long left_button_interval;
 unsigned long center_button_interval;
 
+
+//Left Button Stuff
+int presses;
 void left_button_ISR(void)
 {
     if(millis()-left_button_interval>=100)
     {
-      writeRGB(0,100,100);
       play_audio(audio_button_push);
       left_button_interval = millis();
+
+      //do left button stuff here
+      presses--;
+
     }
 }
+
+
+//Right Button Stuff
 void right_button_ISR(void)
 {
     if(millis()-right_button_interval>=100)
     {
-      writeRGB(100,100,0);
-      if(isInConfiguration)
-      {
-        
-       switch (configuration_index)
-       {
-       case 0:
-        front_threshold=front_distance;
-        break;
-       case 1:
-        right_threshold=right_distance;
-        break;
-        case 2:
-        left_threshold=left_distance;
-        break;
-                case 3:
-        left_minima=left_distance;
-        break;
-                case 4:
-        right_minima=right_distance;
-        break;
-                case 5:
-        front_maxima=front_distance;
-        break;
-       }
-       configuration_index++; 
-      }
       play_audio(audio_button_push);
       right_button_interval = millis();
+
+      //do right button stuff here
+      presses++;
     }
 }
 
+//Middle Button stuff
+bool ok_state;
 void middle_button_ISR(void)
 {
     if(millis()-center_button_interval>=100)
     {
-      if(run){run=0;}else{run=1;}
-      writeRGB(80,100,200);
       play_audio(audio_button_push);
       center_button_interval = millis();
+
+      //do middle button stuff here
+      ok_state=1;
     }
 }
 
 
-void detectColor()
+//motor stuff
+void test_motors()
 {
 
 }
 
-int distance_counts;
+void calibrate_motors()
+{
+
+}
+
+//IO stuff
+unsigned long IO_interval;
+
+void fetchIO()
+{ //do IO stuff later here
+  if( isModifying?millis()-IO_interval>=500:millis()-IO_interval>=100) //each half a second interpret the stuff
+  {
+  if(isModifying)
+  {
+    if(presses>0)
+    {
+      double_buffer+=0.1;int_buffer++;
+    }else 
+    if(presses>1)
+    {
+      int_buffer+=5;
+      ;double_buffer+=0.4;
+    }else
+    if(presses>3)
+    {
+      int_buffer+=10;
+      double_buffer+=1;
+    }else
+    if(presses<0)
+    {
+      double_buffer-=0.1;int_buffer--;
+    }else
+    if(presses<-1)
+    {
+      double_buffer-=0.4;
+      int_buffer-=5;
+    }else    
+    if(presses<-3)
+    {
+      double_buffer-=1.0;
+      int_buffer-=10;
+    }else
+    {double_buffer=double_buffer;
+    int_buffer=int_buffer;}
+  }else
+  {
+    if(presses>0)
+    {
+      elements_index++;
+    }
+    if(presses<0)
+    {
+      elements_index--;
+    }
+    if(elements_index<0)
+    {
+      elements_index=(byte)index_name_counts[page_index];
+    }else
+    if(elements_index>index_name_counts[page_index])
+    {
+      elements_index=0;
+    }
+
+  }
+   // I KNOW I DID A MESS HERE BUT BARE WITH ME FOR I AM LATE
+  IO_interval=millis();
+  presses=0;
+} 
+}
+
+void menu_action()
+{ 
+  if(ok_state){
+    switch (page_index)
+    {
+
+            case 0: //Select
+                      switch (elements_index)
+                      {
+                      case 0:
+                        run=1;
+                        page_index =10;
+                        elements_index=7;
+                        break;
+                      case 1:
+                        page_index=1;
+                        break;
+
+                      case 2:
+                      //save all vars to EEPROM
+                        break;
+
+                      case 3: // load all vars from EEPROM
+                        page_index=1;
+                        break;
+
+                      default:
+                        elements_index=0;
+                        break;
+                      }
+              break;
+
+            case 1: //Configurations
+                      switch (elements_index)
+                      {
+                      case 0: //Operation mode
+                        page_index =2;
+                        break;
+
+                      case 1: //PID
+                        page_index =3;
+                        break;
+
+                      case 2: //Distance
+                        page_index =4;
+                        break;
+
+                      case 3: //Telemetry
+                        page_index =5;
+                        break;
+
+                      case 4: //Color
+                        page_index =6;
+                        break;
+
+                      case 5: //End
+                        page_index =7;
+                        break;
+
+                      case 6: //Sensor Display
+                        page_index =8;
+                        break;
+
+                      case 7: //Back
+                        page_index =0;
+                        break;
+
+                      default:
+                        page_index=0;
+                        elements_index=0;
+                        break;
+                      }
+              break;
+
+
+            case 2: //Operation Mode
+                      switch (elements_index)
+                      {
+                      case 0:
+                        operation_mode=Adjusted_operation;
+                        break;
+
+                      case 1:
+                        operation_mode=PID1_operation;
+                        break;
+
+                      case 2:
+                        operation_mode=PID2_operation;
+                        break;
+
+                      case 3:
+                        operation_mode=Telemetry_operation;
+                        break;
+
+                      case 4:
+                        operation_mode=PID_Telemetry_operation;
+                        break;
+
+                      default:
+                        page_index=1;
+                        elements_index=7;
+                        break;
+                      }
+                      page_index =1;
+                      elements_index=0;
+              break;
+    
+            case 3: //PID
+                      switch (elements_index)
+                      {
+                      case 0: //kp
+                        if(isModifying)
+                        {
+                          speed_Kp=double_buffer;
+                          isModifying=0;
+                        }else
+                        {
+                          double_buffer=speed_Kp;
+                          isModifying=1;
+                        }
+                        break;
+
+                      case 1: //ki
+                        if(isModifying)
+                        {
+                          speed_Ki=double_buffer;
+                          isModifying=0;
+                        }else
+                        {
+                          double_buffer=speed_Ki;
+                          isModifying=1;
+                        }
+                        break;
+
+                      case 2:
+                        if(isModifying)
+                        {
+                          speed_Kd=double_buffer;
+                          isModifying=0;
+                        }else
+                        {
+                          double_buffer=speed_Kd;
+                          isModifying=1;
+                        }
+                        break;
+
+                      case 3: //base speed
+                        if(isModifying)
+                        {
+                          base_speed=int_buffer;
+                          isModifying=0;
+                        }else
+                        {
+                          int_buffer = base_speed;
+                          isModifying=1;
+                        }
+                        break;
+
+                      case 4: //Left SPD
+                        if(isModifying)
+                        {
+                          left_speed =int_buffer;
+                          isModifying=0;
+                        }else
+                        {
+                          int_buffer = left_speed;
+                          isModifying=1;
+                        }
+                        break;
+
+                      case 5: //Left SPD
+                        if(isModifying)
+                        {
+                          right_speed =int_buffer;
+                          isModifying=0;
+                        }else
+                        {
+                          int_buffer = right_speed;
+                          isModifying=1;
+                        }
+                        break;
+
+                      default:
+                        page_index=1;
+                        elements_index=1;
+                        break;
+                      }
+              break;
+
+            case 4: //Distances
+                      last_page_index=page_index;
+                      last_element_index=elements_index;
+                      switch (elements_index)
+                      {
+                      case 0:
+                        variable_index=0;
+                        page_index =9;
+                        elements_index=0;
+                        break;
+
+                      case 1:
+                        variable_index=1;
+                        page_index =9;
+                        elements_index=0;
+                        break;
+
+                      case 2:
+                        variable_index=2;
+                        page_index =9;
+                        elements_index=0;
+                        break;
+                      case 3:
+                        variable_index=3;
+                        page_index =9;
+                        elements_index=0;
+                        break;
+                      case 4:
+                        variable_index=4;
+                        page_index =9;
+                        elements_index=0;
+                        break;
+                      case 5:
+                        variable_index=5;
+                        page_index =9;
+                        elements_index=0;
+                        break;
+
+                      default:
+                        page_index=1;
+                        elements_index=2;
+                        break;
+                      }
+              break;
+
+            case 5: //Telemetry
+                      switch (elements_index)
+                      {
+                        case 0: //Motor Bias left
+                        if(isModifying)
+                        {
+                          motor_bias_left=double_buffer;
+                          isModifying=0;
+                        }else
+                        {
+                          double_buffer=motor_bias_left;
+                          isModifying=1;
+                        }
+                        break;
+
+                        case 1: //Motor Bias left
+                        if(isModifying)
+                        {
+                          motor_bias_right=double_buffer;
+                          isModifying=0;
+                        }else
+                        {
+                          double_buffer=motor_bias_right;
+                          isModifying=1;
+                        }
+                        break;
+
+                        case 2: 
+                        test_motors(); //draw in the oled screen the encoder readings ig
+                        break;
+
+                        case 3: //Block size
+                        if(isModifying)
+                        {
+                          block_size=int_buffer;
+                          isModifying=0;
+                        }else
+                        {
+                          int_buffer=block_size;
+                          isModifying=1;
+                        }
+                        break;
+
+                        case 4: 
+                        calibrate_motors(); //draw in the oled screen the encoder readings ig
+                        break;
+
+                      default:
+                        page_index=1;
+                        elements_index=3;
+                        break;
+                      }
+              break;
+
+            case 6: //Color
+                      switch (elements_index)
+                      {
+                      case 0:
+                      last_page_index=page_index;
+                      last_element_index=elements_index;
+                        variable_index=6;
+                        page_index =9;
+                        elements_index=0;
+                        break;
+                      case 1:
+                      last_page_index=page_index;
+                      last_element_index=elements_index;
+                        variable_index=7;
+                        page_index =9;
+                        elements_index=0;
+                        break;
+
+                      default:
+                        page_index=1;
+                        elements_index=4;
+                        break;
+                      }
+              break;
+
+            case 7: //End
+                      switch (elements_index)
+                      {
+                      case 0:
+                        calibrateIR();
+                        break;
+                      case 1:
+
+                        break;
+
+                      default:
+                        page_index=1;
+                        elements_index=5;
+                        break;
+                      }
+              break;
+
+            case 8: //Sensor Test (this should take you to another page ig)
+                      switch (elements_index)
+                      {
+                      case 0:
+                        page_index=1;
+                        elements_index=6;
+                        break;
+                      }
+              break;
+
+            case 9: //Incriment decriment stuff
+                      switch (elements_index)
+                      {
+                      case 0:
+                        switch (variable_index)
+                        {
+                        case 0:
+                          left_minima+=10;
+                          break;
+
+                        case 1:
+                          left_maxima+=10;
+                          break;
+
+                        case 2:
+                          right_minima+=10;
+                          break;
+
+                        case 3:
+                          right_maxima+=10;
+                          break;
+
+                        case 4:
+                          front_minima+=10;
+                          break;
+
+                        case 5:
+                          front_maxima+=10;
+                          break;
+
+                        case 6:
+                          redThreshold+=10;
+                          break;
+
+                        case 7:
+                          blueThreshold+=10;
+                          break;
+
+                        }
+                        break;
+
+                      case 1:
+                        switch (variable_index)
+                        {
+                        case 0:
+                          left_minima=left_distance;
+                          break;
+
+                        case 1:
+                          left_maxima=left_distance;
+                          break;
+
+                        case 2:
+                          right_minima=right_distance; //if isModifiyng display the buffer, or else display the shit
+                          break;
+
+                        case 3:
+                          right_maxima=right_distance;
+                          break;
+
+                        case 4:
+                          front_minima=front_distance;
+                          break;
+
+                        case 5:
+                          front_maxima=front_distance;
+                          break;
+
+                        case 6:
+                          redThreshold=redFrequency;
+                          break;
+
+                        case 7:
+                          blueThreshold=blueFrequency;
+  
+                          break;
+                        }
+                        break;
+
+                      case 2:
+                        switch (variable_index)
+                        {
+                        case 0:
+                          left_minima-=10;
+                          break;
+
+                        case 1:
+                          left_maxima-=10;
+                          break;
+
+                        case 2:
+                          right_minima-=10;
+                          break;
+
+                        case 3:
+                          right_maxima-=10;
+                          break;
+
+                        case 4:
+                          front_minima-=10;
+                          break;
+
+                        case 5:
+                          front_maxima-=10;
+                          break;
+
+                        case 6:
+                          redThreshold-=10;
+                          break;
+
+                        case 7:
+                          blueThreshold-=10;
+                          break;
+
+                        }
+                        break;
+
+                        
+                      default:
+                        elements_index=last_element_index;
+                        page_index=last_page_index;
+                        break;
+                      }
+
+            case 10: //Running
+                      switch (elements_index)
+                      {
+                      case 0:
+                        operation_mode = No_operation;
+                        page_index =0;
+                        elements_index=1;
+                        break;
+
+                      default:
+                        elements_index=0;
+                        break;
+                      }
+              break;
+    }
+  ok_state=0;
+  if(isModifying)
+  {
+    writeRGB(200,120,5);
+  }else
+  {
+    writeRGB(0,5,5);
+  }
+  }
+}
+
+byte mhabsi_index;
+unsigned long mhabsi_interval;
+
+void display()
+{
+  oled.clearBuffer();
+
+  if(page_index==10){
+
+        if(millis()-mhabsi_interval>=3000)
+        {
+          mhabsi_index++;
+          if(mhabsi_index>1){mhabsi_index=0;}
+          mhabsi_interval=millis();
+        }
+          if(isEnded){oled.drawXBMP(0,0,128,64,Prizon_break);}else{
+                switch (mhabsi_index)
+                {
+                case 0:
+                  oled.drawXBMP(0,0,128,64,Mhabsi_ASCE);
+                  break;
+                
+                case 1:
+                 oled.drawXBMP(0,0,128,64,Mhabsi_BILAL);
+                break;
+                }
+          }
+    }else
+    {
+    for(int i=0;i<=index_name_counts[page_index];i++)
+      {
+        if(i==elements_index)
+        {oled.drawBox(0,i*7+i,128,8);
+        oled.setDrawColor(0);oled.setFontMode(1);}else{oled.setDrawColor(1);oled.setFontMode(0);}
+        ocursor(4,i*7+i+7);
+        oprint(index_name[page_index][i]);
+        ocursor(86,i*7+i+7);
+        switch (page_index)
+        {
+        case 3: //PID stuff
+          switch (i)
+          {
+          case 0:
+            isModifying&&i==elements_index?oprint(double_buffer):
+            oprint(speed_Kp);
+            break;
+          case 1:
+          isModifying&&i==elements_index?oprint(double_buffer):
+            oprint(speed_Ki);
+            break;
+          case 2:
+          isModifying&&i==elements_index?oprint(double_buffer):
+            oprint(speed_Kd);
+            break;
+          case 3:
+          isModifying&&i==elements_index?oprint(int_buffer):
+            oprint(base_speed);
+            break;
+          case 4:
+          isModifying&&i==elements_index?oprint(int_buffer):
+            oprint(left_speed);
+            break;
+          case 5:
+          isModifying&&i==elements_index?oprint(int_buffer):
+            oprint(right_speed);
+            break;
+          }
+          break;
+
+        case 4:
+        switch (i)
+        {
+        case 0:
+          oprint(left_minima);
+          break;
+        case 1:
+          oprint(left_maxima);
+          break;
+        case 2:
+          oprint(right_minima);
+          break;
+        case 3:
+          oprint(right_maxima);
+          break;
+        case 4:
+          oprint(front_minima);
+          break;
+        case 5:
+          oprint(front_maxima);
+          break;
+        }
+        break;
+
+        case 5:
+        switch (i)
+        {
+        case 0:
+          oprint(motor_bias_left);
+          break;
+        case 1:
+          oprint(motor_bias_right);
+          break;
+        case 3:
+        isModifying&&i==elements_index?oprint(int_buffer):
+          oprint(block_size);
+          break;
+
+        }
+        break;
+
+        case 6:
+        switch (i)
+        {
+        case 0:
+          oprint(redThreshold);
+          break;
+        case 1:
+          oprint(blueThreshold);
+          break;
+        }
+        break;
+
+        case 9:
+        if(i==elements_index&&elements_index==1)
+        {
+                        getDistancesRaw();
+                        getDistancesRaw();
+                        getDistancesRaw();
+                        getDistancesRaw();
+                        getDistancesRaw();
+                        detectColor();
+          switch (variable_index)
+          {
+          case 0:
+            oprint(left_distance);
+            break;
+          
+          case 1:
+            oprint(left_distance);
+            break;
+
+          case 2:
+            oprint(right_distance);
+            break;
+
+          case 3:
+            oprint(right_distance);
+            break;
+
+          case 4:
+            oprint(front_distance);
+            break;
+
+          case 5:
+            oprint(front_distance);
+            break;
+
+          case 6:
+            oprint(redFrequency);
+            break;
+          case 7:
+            oprint(blueFrequency);
+            break;
+          }
+        }
+        ocursor(64,50);
+        switch (variable_index)
+        {
+          case 0:
+            oprint(left_minima);
+            break;
+          
+          case 1:
+            oprint(left_maxima);
+            break;
+
+          case 2:
+            oprint(right_minima);
+            break;
+
+          case 3:
+            oprint(right_maxima);
+            break;
+
+          case 4:
+            oprint(front_minima);
+            break;
+
+          case 5:
+            oprint(front_maxima);
+            break;
+
+          case 6:
+            oprint(redThreshold);
+            break;
+          case 7:
+            oprint(blueThreshold);
+            break;
+        }
+        break;
+
+        }
+      }
+
+    }
+  ocursor(110,7);
+  oprint(analogRead(VBat_pin)*0.009786-1.4);
+  oprint("v");
+  oled.sendBuffer();
+
+  // if(millis()-display_interval>=250){
+  // oled.clearBuffer();
+  // oled.setCursor(5,7);
+  // oled.print("Front Sonar:");
+  // oled.print(front_distance);
+  // oled.setCursor(5,15);
+  // oled.print("Right Sonar:");
+  // oled.print(right_distance);
+  // oled.setCursor(5,23);
+  // oled.print("Left Sonar:");
+  // oled.print(left_distance);
+
+  // oled.setCursor(5,30);
+  // oled.print("Battery mV:");
+  // oled.print(analogRead(VBat_pin)*0.009786-1.4);
+
+  // oled.setCursor(5,37);
+  // oled.print("PID error:");
+  // oled.print(speed_error);
+
+  // oled.setCursor(5,50);
+  // oled.print("Left Encoder");
+  // oled.print(left_encoder_counts);
+
+  // oled.setCursor(5,58);
+  // oled.print("Right Encoder:");
+  // oled.print(right_encoder_counts);
+
+  // oled.setCursor(96,62);
+  // oled.print(compute_time);
+
+  // oled.setCursor(96,7);
+  // oled.print(distance_time);
+
+  // oled.sendBuffer();
+  // display_interval = millis();
+  // }
+}
+
+// color detection ========================================================================================================
+
 
 //boring hardcoded dayz ======================================================================
 void setup()  
@@ -807,6 +1646,11 @@ void setup()
   pinMode(right_button_pin,INPUT_PULLUP);
   pinMode(left_button_pin,INPUT_PULLUP);
   pinMode(middle_button_pin,INPUT_PULLUP);
+  pinMode(color_sensor_s0_pin, OUTPUT);
+  pinMode(color_sensor_s1_pin, OUTPUT);
+  pinMode(color_sensor_s2_pin, OUTPUT);
+  pinMode(color_sensor_s3_pin, OUTPUT);
+  pinMode(color_sensor_output_pin, INPUT);
 
   //interrupts and stuff
   attachInterrupt(digitalPinToInterrupt(left_motor_encoder_pin),leftISR,FALLING);
@@ -816,6 +1660,8 @@ void setup()
   attachPCINT(digitalPinToPCINT(middle_button_pin),middle_button_ISR,FALLING);
   
   writeRGB(0,0,0);
+  digitalWrite(color_sensor_s0_pin, HIGH);
+  digitalWrite(color_sensor_s1_pin, LOW);
   //Serial.begin(19200);   //intialize the serial monitor baud rate
   //Serial.println("Serial initialized");
   oled.begin();
@@ -829,27 +1675,55 @@ void setup()
   //configureThresholds();
 }
 
-
-bool turnB;
-
-int lastLeftDistance;
-int lastRightDistance;
-int lastFrontDistance;
-
 void loop()
 {
+
   if(run){
-  digitalWrite(motor_standby_pin,1);
-
-  if(travel_mode==forward_mode){setSpeedRight();setSpeedLeft();}
-
-  }else
+  getDistancesRaw();
+  detectColor();
+  detectEnd();
+  analogWrite(left_motor_pwm_pin,base_speed);
+  analogWrite(right_motor_pwm_pin,base_speed);
+  switch (operation_mode)
   {
+  case No_operation:
     digitalWrite(motor_standby_pin,0);
-  }
+    break;
   
+  case Adjusted_operation:
+  break;
+  
+  case PID1_operation:
+  setDirection(dir_forward);
+  digitalWrite(motor_standby_pin,1);
+  setSpeed();
+  break;
+
+  case PID2_operation:
+    setDirection(dir_forward);
+  digitalWrite(motor_standby_pin,1);
+  setSpeedLeft();
+  setSpeedRight();
+  break;
+
+  case Telemetry_operation:
+  digitalWrite(motor_standby_pin,1);
+  travelToTarget(30);
+  if(!isTraveling)
+  {
+    play_audio(audio_connected);
+  }
+  break;
+
+  case PID_Telemetry_operation:
+  digitalWrite(motor_standby_pin,0);
+  break;
+  }
+  }
   performTravel();
   display();
   performAudioFeedback();
+  fetchIO();
+  menu_action();
 
 }
