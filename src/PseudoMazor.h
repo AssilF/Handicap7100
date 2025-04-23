@@ -44,10 +44,6 @@
 #define left_IR  A11
 #define right_IR A10
 
-#define R_LED 6 //RGB LED stuff (Has PWM)
-#define G_LED 4
-#define B_LED 5
-
 // #define using_TFT 1
 #define using_OLED 1
 

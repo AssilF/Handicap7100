@@ -8,6 +8,7 @@
 #include <NewPing.h> //questionable library but this will do for now
 #include <menu.h>
 #include <audiocore.h>
+#include <flashcore.h>
 
 /*
 This code is our "last resort" entry for polymaze 2024, hence the name "pseudomazor", later called handicap7100, the real mazor is based on an
@@ -47,7 +48,7 @@ U8G2_SSD1306_128X64_NONAME_F_HW_I2C oled(U8G2_R0);
 
 byte operation_mode = No_operation;
 
-void writeRGB(byte r, byte g, byte b);
+
 // Telemetry magic
 float left_encoder_counts;
 unsigned long last_Left_Count_Millis;
@@ -108,11 +109,13 @@ bool Weight_Mode=0;
 bool LineMode=0;
 #define weight_QTR 0
 #define weight_TCRTase 1 //0 1400 2600 3200 3800 4400 5600 7000 pose list
-float weight_array[NUM_SENSORS] = {0.0,1.4,2.6,3.2,3.8,4.4,5.6,7.0};
+float weight_array[NUM_SENSORS] = {0,1.4,2.6,3.2,3.8,4.4,5.6,7.0};
+int32_t weightedSum = 0;
+int16_t totalValue = 0;
+
 // SUM(Reading*Pose)/SUM of readings //Zone Count
 //Add config for zone checkpoints
-byte junction_count=0;
-byte current_zone=0;
+
 bool CalibrationMode = 0;
 #define auto_line_calibration_goes 3
 // Intersection detection
@@ -138,18 +141,36 @@ byte line_sample_count=2;
 #define threshold_normalized 1
 #define threshold_raw 0
 
+
+
 bool onLine[kSensorCount];        // final black/white flags
 
 uint16_t thresh[kSensorCount];
 
 
 //Explicity ladder : INBOX>OUTLINE>RIGHTT/LEFTT>PASTLINE>PASTLEFT>PASTRIGHT>PASTRIGHTT>PASTLEFTT>INLINE
+#define OUTLINE !(onLine[0] || onLine[1] || onLine[2] || onLine[3] || onLine[4] || onLine[5] || onLine[6] || onLine[7]) 
 #define INBOX (onLine[0] && onLine[1] && onLine[2] && onLine[3] && onLine[4] && onLine[5] && onLine[6] && onLine[7])
-#define OUTLINE !(onLine[0] || onLine[1] || onLine[2] || onLine[3] || onLine[4] || onLine[5] || onLine[6] || onLine[7]) //prolly don't even wanna detect this shi but still most explicit
+//prolly don't even wanna detect this shi but still most explicit
+#define RIGHT_TURN (INLINE && (onLine[6]|| onLine[7])) //Most Explicit
+#define LEFT_TURN (INLINE && (onLine[1]||onLine[0]))
+#define PASTLINE ( (onLine[7] || onLine[6]) && (onLine[0] || onLine[1]) || (INLINE && (onLine[7] || onLine[6])) && (INLINE && (onLine[0] || onLine[1]))  ) 
+#define INLINE (onLine[3] || onLine[4] || onLine[2] || onLine[5]) //Lest Explicit
 
-#define RIGHT_TURN ((onLine[3] && onLine[4] && onLine[5] && onLine[6] && onLine[7]) ||(onLine[3] && onLine[4] && onLine[5] && onLine[6] )  || (onLine[4] && onLine[5] && onLine[6]) || (onLine[5] && onLine[6])) //Most Explicit
-#define LEFT_TURN ((onLine[4] && onLine[3] && onLine[2] && onLine[1] && onLine[0]) || (onLine[4] && onLine[3] && onLine[2] && onLine[1] ) || (onLine[3] && onLine[2] && onLine[1]) || (onLine[2] && onLine[1]))
-#define PASTLINE (onLine[7] && onLine[0])
+unsigned long deadtime_current;
+uint16_t deadtime_interval;
+byte junction_count=0;
+byte current_zone=0;
+
+//CJ INLINE && PJ PASTLINE = CROSS
+//CJ INLINE && PJ LEFT TURN = T LEFT
+//CJ INLINE && PJ RIGHT TURN = T RIGHT
+//CJ OUTLINE && PJ PASTLINE = T section
+//CJ OUTLINE && PJ LEFT TURN = LEFT L
+//CJ OUTLINE && PJ RIGHT TURN = RIGHT L
+//CJ INLINE && PJ OUTLINE = RAM/DO NOTHING 
+
+
 
 #define PAST_RIGHT_TURN ((onLine[7] && onLine[6]) || (onLine[7]))
 #define PAST_LEFT_TURN ((onLine[0] && onLine[1]) || (onLine[0]))
@@ -157,7 +178,6 @@ uint16_t thresh[kSensorCount];
 #define PAST_LEFT_LINE (INLINE && (onLine[0]))  //Experimental
 #define PAST_RIGHT_LINE (INLINE && (onLine[7])) //Experimental
 
-#define INLINE (onLine[3] || onLine[4] || onLine[2] || onLine[5]) //Lest Explicit
 
 #define inbox_line 0
 #define out_of_line 1
@@ -173,8 +193,8 @@ uint16_t thresh[kSensorCount];
 
 //#define undefined_state??
 
-byte junctionState;
-byte lastJunctionState;
+byte junctionState=0;
+byte lastJunctionState=0;
 byte confirmed_junction=0;
 
 #define no_junction 0
@@ -189,74 +209,73 @@ byte confirmed_junction=0;
 //I think we may be in grave need, of a flagging system.
 void fetchJunction()
 {
-  if(lastJunctionState != junctionState)
+
+  //CJ INLINE && PJ PASTLINE = CROSS
+  //CJ INLINE && PJ LEFT TURN = T LEFT
+  //CJ INLINE && PJ RIGHT TURN = T RIGHT
+  //CJ OUTLINE && PJ PASTLINE = T section
+  //CJ OUTLINE && PJ LEFT TURN = LEFT L
+  //CJ OUTLINE && PJ RIGHT TURN = RIGHT L
+  //CJ INLINE && PJ OUTLINE = RAM/DO NOTHING 
+
+  if(junctionState != lastJunctionState)
   {
-    
-    switch (lastJunctionState)
-    {
-
-    case horizontal_line:
-        switch (junctionState)
-        
-        {
-          case inline_line:
-            confirmed_junction= cross_junction;
-            break;
-          
-          case out_of_line:
-            confirmed_junction= T_junction;
-            break;
-
-          default:
-            confirmed_junction = undefined_junction;
-            break;
-          }
-      break;
-    
-    case unconfirmed_left_line:
     switch (junctionState)
-    {
-    case left_turn_t_line:
-    confirmed_junction= left_T_junction;
-      break;
+   {
+    // case inline_line:
+    // switch (lastJunctionState)
+    // {
+    // case horizontal_line:
+    // confirmed_junction= cross_junction;
+    // break;
     
-    case left_turn_line:
-    confirmed_junction=left_turn_junction;
-    break;
+    // case left_turn_line:
+    // confirmed_junction= left_T_junction;
+    // break;
 
-    default:
-    confirmed_junction=undefined_junction;
-      break;
-    }
-    break;
+    // case right_turn_line:
+    // confirmed_junction= right_T_junction;
+    // break;
 
-    case unconfirmed_right_line:
-    switch (junctionState)
-    {
-    case right_turn_t_line:
-    confirmed_junction= right_T_junction;
-      break;
+    // default:
+    // confirmed_junction = no_junction;
+    // break;
+    // }
+    // break;
+
+    // case out_of_line:
+    // switch (lastJunctionState)
+    // {
+    // case horizontal_line:
+    // confirmed_junction= T_junction;
+    // break;
     
-    case right_turn_line:
-    confirmed_junction=right_turn_junction;
-    break;
+    // case left_turn_line:
+    // confirmed_junction= left_turn_junction;
+    // break;
 
-    default:
-    confirmed_junction=undefined_junction;
-      break;
-    }
-    break;
+    // case right_turn_line:
+    // confirmed_junction= right_turn_junction;
+    // break;
 
-      default:
-      confirmed_junction = no_junction;
-      break;
-    }
-    
+    // default:
+    // confirmed_junction = no_junction;
+    // break;
+    // }
+    // break;
+
+    // default:
+    // confirmed_junction = no_junction;
+    // break;
+    // }
+   }
+
     performJunctionAction();
 
     if(junctionState!=inline_line || junctionState!=out_of_line){play_audio(audio_value_inc);}
   }
 }
+
 
 void fetchLinePose()
 {
@@ -276,28 +295,38 @@ void fetchLinePose()
       onLine[i]=0;
     }
   }
+//let's use morphology instead:
+
+
 //Explicity ladder : INBOX>OUTLINE>RIGHTT/LEFTT>PASTLINE>PASTLEFT>PASTRIGHT>PASTLEFTT>PASTLEFTT>INLINE
-  if(INBOX)
-  {junctionState=inbox_line;}else
-  if(OUTLINE)
-  {junctionState=out_of_line;}else
-  if(RIGHT_TURN)
-  {junctionState=unconfirmed_right_line; }else
-  if(LEFT_TURN)
-  {junctionState=unconfirmed_left_line; }else
-  if(PASTLINE)
-  {junctionState=horizontal_line; }else
-  if(PAST_RIGHT_TURN)
-  {junctionState=right_turn_line; }else
-  if(PAST_LEFT_TURN)
-  {junctionState=left_turn_line;}else
-  if(PAST_RIGHT_LINE)
-  {junctionState=right_turn_t_line; }else
-  if(PAST_LEFT_LINE)
-  {junctionState=left_turn_t_line; }else 
-  if(INLINE)
-  {junctionState=inline_line;}else //holy verbosity solved
-  {junctionState=undefined_line;}
+  //   if(OUTLINE)
+  //   {}else if(INBOX)
+  //   {}else if( !onLine[0] && !onLine[1] && !onLine[2] && (onLine[3] || onLine[4] && ( onLine[5] || onLine[6] || onLine[7])) ) // Right Side
+  //   {}else if( !onLine[7] && !onLine[6] && !onLine[5] && (onLine[4] || onLine[3] && (onLine[2] || onLine[1] || onLine[0]))) // Left Side
+  //   {}else if(INLINE && ())
+  //   {
+
+  //   }
+  //         // if(INBOX)
+  //         // {junctionState=inbox_line;}else
+  //         // if(OUTLINE)
+  //         // {junctionState=out_of_line;}else
+  //         // if(RIGHT_TURN)
+  //         // {junctionState=right_turn_line; }else
+  //         // if(LEFT_TURN)
+  //         // {junctionState=left_turn_line; }else
+  //         // if(PASTLINE)
+  //         // {junctionState=horizontal_line; }else
+  //         // if(INLINE)
+  //         // {junctionState=inline_line;}else //holy verbosity solved
+  //         // {junctionState=undefined_line;}
+  // //CJ INLINE && PJ PASTLINE = CROSS
+  // //CJ INLINE && PJ LEFT TURN = T LEFT
+  // //CJ INLINE && PJ RIGHT TURN = T RIGHT
+  // //CJ OUTLINE && PJ PASTLINE = T section
+  // //CJ OUTLINE && PJ LEFT TURN = LEFT L
+  // //CJ OUTLINE && PJ RIGHT TURN = RIGHT L
+  // //CJ INLINE && PJ OUTLINE = RAM/DO NOTHING 
 
 fetchJunction();
 
@@ -1054,13 +1083,6 @@ void detectEnd()
 
 int distance_counts;
 
-void writeRGB(byte r, byte g, byte b)
-{
-  analogWrite(R_LED, 255 - r);
-  analogWrite(G_LED, 255 - g);
-  analogWrite(B_LED, 255 - b);
-}
-
 bool isInConfiguration;
 byte configuration_index;
 void configureThresholds()
@@ -1195,10 +1217,70 @@ void calibrate_motors()
 {
 }
 
+//The KICK system >:((((((((((
+float kick_angle=65.00;
+
+int ram_distance=100;
+
+byte kick_speed=70;
+bool isKicking;
+bool kickingmode;
+
+void kick_left()
+{
+  isKicking =1;
+  kickingmode=0;
+  left_encoder_counts = 0;
+  right_encoder_counts = 0;
+  setDirection(dir_U_left);
+  analogWrite(left_motor_pwm_pin, kick_speed);
+  analogWrite(right_motor_pwm_pin, kick_speed);
+
+}
+
+void kick_right()
+{
+  isKicking =1;
+  kickingmode=0;
+  left_encoder_counts = 0;
+  right_encoder_counts = 0;
+  setDirection(dir_U_right);
+  analogWrite(left_motor_pwm_pin, kick_speed);
+  analogWrite(right_motor_pwm_pin, kick_speed);
+}
+
+void RAM()
+{
+  isKicking=1;
+  kickingmode = 1;
+  setDirection(dir_forward);
+  analogWrite(left_motor_pwm_pin, kick_speed);
+  analogWrite(right_motor_pwm_pin, kick_speed);
+}
+
+#define mm_per_count 1.86f
+
+void performKick()
+{
+  if(isKicking)
+  {
+    if(kickingmode=0){
+    if ((((left_encoder_counts / COUNTS_PER_DEGREE) + (right_encoder_counts / COUNTS_PER_DEGREE)) / 2 >= kick_angle))
+    {
+        isKicking=0;
+    }}else
+    {
+      if ((((left_encoder_counts * mm_per_count) + (right_encoder_counts *mm_per_count)) / 2 >= ram_distance))
+      {
+        isKicking =0;
+      }
+    }
+  }
+}
+
 //Junction Engine
 void performJunctionAction() //blackbox trigger hell yeah!
 {
-  writeRGB(100,0,0);
   switch (confirmed_junction)
   {
 
@@ -1891,6 +1973,11 @@ void menu_action()
         elements_index = 0;
         break;
 
+      case 2:
+      page_index = 17;
+      elements_index =0;
+      break;
+
       default:
         page_index = 0;
         elements_index = 5;
@@ -2005,6 +2092,82 @@ void menu_action()
       }
       break;
 
+    case 17:
+    switch (elements_index)
+    {
+    case 4: //kick left
+    kick_left();
+    light(light_zone2);
+    while (isKicking)
+    {
+      oled.clearBuffer();
+      ocursor(10,20);
+      oprint("KICKING LEFT!");
+      ocursor(10,40);
+      oprint("leftenc:");
+      oprint(left_encoder_counts);
+      ocursor(10,55);
+      oprint("rightenc:");
+      oprint(right_encoder_counts);
+      oled.sendBuffer();
+      performKick();
+      performAudioFeedback();
+      performLightFeedback();
+    }
+    light(light_off);
+      break;
+
+    case 5: //kick right
+    kick_right();
+    light(light_zone3);
+    while (isKicking)
+    {
+      oled.clearBuffer();
+      ocursor(10,20);
+      oprint("KICKING RIGHT!");
+      ocursor(10,40);
+      oprint("leftenc:");
+      oprint(left_encoder_counts);
+      ocursor(10,55);
+      oprint("rightenc:");
+      oprint(right_encoder_counts);
+      oled.sendBuffer();
+      performKick();
+      performAudioFeedback();
+      performLightFeedback();
+    }
+    light(light_off);
+      break;
+
+    case 6: //ram
+    RAM();
+    light(light_zone4);
+    while (isKicking)
+    {
+      oled.clearBuffer();
+      ocursor(10,20);
+      oprint("RAMMING!");
+      ocursor(10,40);
+      oprint("leftenc:");
+      oprint(left_encoder_counts);
+      ocursor(10,55);
+      oprint("rightenc:");
+      oprint(right_encoder_counts);
+      oled.sendBuffer();
+      performKick();
+      performAudioFeedback();
+      performLightFeedback();
+    }
+    light(light_off);
+      break;
+    
+    default:
+    page_index = 14;
+    elements_index = 2;
+      break;
+    }
+    break;
+
     default:
       page_index = 0;
       elements_index = 1;
@@ -2015,11 +2178,11 @@ void menu_action()
     ok_state = 0;
     if (isModifying)
     {
-      writeRGB(200, 120, 5);
+      light(light_modifying);
     }
     else
     {
-      writeRGB(0, 5, 5);
+      light(light_off);
     }
   }
 }
@@ -2070,8 +2233,11 @@ void display()
       oprint(millis()-compute_time);
       oprint(" Err:");
       oprint(line_error);
+      ocursor(2,25);
       oprint(" Jnc:");
       oprint(junction_count);
+      oprint(" Zone:");
+      oprint(current_zone);
     }
   }
   else if (page_index == 12)
@@ -2404,6 +2570,19 @@ void display()
 
       case 11: //{"LinePoseB:","LinePoseW:","LineMode:","DistanceL:","DistanceR:","DistanceF:","Intersection:"}
         getDistancesRaw();
+        fetchLinePose();
+          if(Weight_Mode){
+          for (uint8_t i = 0; i < NUM_SENSORS; i++) {
+            weightedSum += sensorCal[i]* weight_array[i];
+            totalValue += sensorCal[i];
+          }
+          if (totalValue != 0) {
+            position = weightedSum / totalValue;
+          } else {
+            // Handle line loss (you could set to last known position, center, or a flag value)
+            position = 0;
+          }
+        }
         switch (i)
         {
         case 0:
@@ -2425,7 +2604,7 @@ void display()
           oprint(front_distance);
           break;
         case 6:
-          oprint("2b imple");
+          oprint(position);
           break;
         }
         break;
@@ -2596,7 +2775,6 @@ void setup()
   lineArray.setSensorPins(sensorPins, NUM_SENSORS);
   
 
-  writeRGB(0, 0, 0);
   digitalWrite(color_sensor_s0_pin, HIGH);
   digitalWrite(color_sensor_s1_pin, LOW);
   // Serial.begin(19200);   //intialize the serial monitor baud rate
@@ -2673,6 +2851,7 @@ void loop()
       break;
 
     case Line_operation:
+
       digitalWrite(motor_standby_pin, 1);
       if (first_run && CalibrationMode)
       {
@@ -2682,7 +2861,6 @@ void loop()
         {
           performAudioFeedback();
         }
-        writeRGB(100, 100, 0);
         first_run = 0;
         is_auto_calibrating = 1;
       }
@@ -2705,15 +2883,23 @@ void loop()
       }
       else
       {
-      writeRGB(20, 200, 0);
+      if(isKicking){
       fetchLinePose();
       if(millis()-line_PID_time >= linePIDInterval) 
       {
-        position = Weight_Mode ? (sensorCal[0]*weight_array[0]+sensorCal[1]*weight_array[1]+sensorCal[2]*weight_array[2]
-          +sensorCal[3]*weight_array[3]+sensorCal[4]*weight_array[4]+sensorCal[5]*weight_array[5]+sensorCal[6]*weight_array[6]
-          +sensorCal[7]*weight_array[7])/(sensorCal[0]+sensorCal[1]+sensorCal[2]+sensorCal[3]+sensorCal[4]+sensorCal[5]+sensorCal[6]+sensorCal[7]) 
-         :(LineMode? lineArray.readLineBlack(sensorValues) : lineArray.readLineWhite(sensorValues));
-       
+        if(Weight_Mode){
+          for (uint8_t i = 0; i < NUM_SENSORS; i++) {
+            weightedSum += sensorCal[i]* weight_array[i];
+            totalValue += sensorCal[i];
+          }
+          if (totalValue != 0) {
+            position = weightedSum / totalValue;
+          } else {
+            // Handle line loss (you could set to last known position, center, or a flag value)
+            position = 0;
+          }
+        }else{position =(LineMode? lineArray.readLineBlack(sensorValues) : lineArray.readLineWhite(sensorValues));
+        }
 
         center = 3500;
         line_error = (float)position - center;
@@ -2729,15 +2915,20 @@ void loop()
         line_PID_time = millis();
         //this time we're only trying to see the time the PID takes to execute to get a valid sampling time
       }
+      }else
+      {
+        performKick();
       }
-      break;
     }
+      break;
+  }
   }
   else
   {
     digitalWrite(motor_standby_pin, 0);
     first_run = 1;
   }
+  performLightFeedback();
   performAudioFeedback();
   fetchIO();
   menu_action();
