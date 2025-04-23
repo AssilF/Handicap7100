@@ -30,13 +30,16 @@
 
 #define Buzzer 51
 
-#define line_follower_sensor_0 A0 //4 is left, 0 is right 
-#define line_follower_sensor_1 A1
-#define line_follower_sensor_2 A2
-#define line_follower_sensor_3 A3
-#define line_follower_sensor_4 A4
-#define Line_follower_sensor_5 A5
-#define VBat_pin A6
+#define line_follower_sensor_0 A11 //4 is left, 0 is right 
+#define line_follower_sensor_1 A8
+#define line_follower_sensor_2 A1
+#define line_follower_sensor_3 A2
+#define line_follower_sensor_4 A3
+#define line_follower_sensor_5 A4
+#define VBat_pin A9
+
+#define line_follower_sensor_6 A5
+#define line_follower_sensor_7 A10
 
 #define left_IR  A11
 #define right_IR A10
@@ -66,7 +69,7 @@
 
 #define MAX_DISTANCE 60 //60cm
 
-
+void setDirection(byte dir);
 
 void getWallDistances(); //retrieves the distances 
 void getIntersectionFromDistance();
