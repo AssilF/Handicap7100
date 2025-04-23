@@ -69,6 +69,8 @@
 
 #define MAX_DISTANCE 60 //60cm
 
+void performJunctionAction();
+
 void setDirection(byte dir);
 
 void getWallDistances(); //retrieves the distances 

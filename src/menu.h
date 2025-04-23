@@ -33,6 +33,6 @@ String index_name[menu_page_index_count][menu_index_count] =
     {"IR0: ","IR1: ","IR2: ","IR3: ","IR4: ","IR5: ","IR6: ","IR7: "}, //13
     {"Line Calibration","Line PID","Back"}, //14 add intersection and junction options here
     {"Threshold Mode: "/*Normal/Raw*/,"Weight Mode: "/*QTR/TCRTase*/,"Hold Time: "/*Phantom Shi*/,"Threshold: "/*Normalt threshold*/,"Sample count: ","back"}, //15 Weight to whether to use the QTR Library or my own Approach, for now I'll only care about hold time LoL
-    {"L-Kp:","L-Kd: ","L-Ki: ","L-BaseS: ","PID interval: ","back"} //16 Added Interval
+    {"L-Kp:","L-Kd: ","L-Ki: ","L-BaseS: ","PID interval: ", "Zone: ","back"} //16 Added Interval
 };//note on adding an experimental speed dependency on the phantom time.
 

@@ -94,10 +94,10 @@ QTRSensors lineArray;
 unsigned long CALIBRATION_TIME = 10000; // Calibration duration in ms
 
 unsigned int linePIDInterval=20;
-byte line_base_speed = 80;
-float line_kp = 1.8;
+byte line_base_speed = 100;
+float line_kp = 1.2;
 float line_ki = 0.0;
-float line_kd = 0.03;
+float line_kd = 0.01;
 float center;
 float line_integral;
 unsigned long line_error_time;
@@ -111,7 +111,8 @@ bool LineMode=0;
 float weight_array[NUM_SENSORS] = {0.0,1.4,2.6,3.2,3.8,4.4,5.6,7.0};
 // SUM(Reading*Pose)/SUM of readings //Zone Count
 //Add config for zone checkpoints
-byte junction_count;
+byte junction_count=0;
+byte current_zone=0;
 bool CalibrationMode = 0;
 #define auto_line_calibration_goes 3
 // Intersection detection
@@ -131,7 +132,7 @@ const uint8_t kSensorCount = 8;
 uint16_t sensorCal[kSensorCount]; // holds calibrated readings 0..1000
 bool onLineBuffer[kSensorCount]; //let's add some spice to this system
 unsigned long onLineInstance[kSensorCount];
-unsigned int onLineInterval=100; //consider making this an array if I wanna introduce behaviours per sensor
+unsigned int onLineInterval=200; //consider making this an array if I wanna introduce behaviours per sensor
 bool threshold_mode=1;
 byte line_sample_count=2;
 #define threshold_normalized 1
@@ -144,10 +145,10 @@ uint16_t thresh[kSensorCount];
 
 //Explicity ladder : INBOX>OUTLINE>RIGHTT/LEFTT>PASTLINE>PASTLEFT>PASTRIGHT>PASTRIGHTT>PASTLEFTT>INLINE
 #define INBOX (onLine[0] && onLine[1] && onLine[2] && onLine[3] && onLine[4] && onLine[5] && onLine[6] && onLine[7])
-#define OUTLINE !(onLine[0] && onLine[1] && onLine[2] && onLine[3] && onLine[4] && onLine[5] && onLine[6] && onLine[7]) //prolly don't even wanna detect this shi but still most explicit
+#define OUTLINE !(onLine[0] || onLine[1] || onLine[2] || onLine[3] || onLine[4] || onLine[5] || onLine[6] || onLine[7]) //prolly don't even wanna detect this shi but still most explicit
 
-#define RIGHT_TURN ((onLine[3] && onLine[4] && onLine[5] && onLine[6]) || (onLine[4] && onLine[5] && onLine[6]) || (onLine[5] && onLine[6])) //Most Explicit
-#define LEFT_TURN ((onLine[4] && onLine[3] && onLine[2] && onLine[1]) || (onLine[3] && onLine[2] && onLine[1]) || (onLine[2] && onLine[1]))
+#define RIGHT_TURN ((onLine[3] && onLine[4] && onLine[5] && onLine[6] && onLine[7]) ||(onLine[3] && onLine[4] && onLine[5] && onLine[6] )  || (onLine[4] && onLine[5] && onLine[6]) || (onLine[5] && onLine[6])) //Most Explicit
+#define LEFT_TURN ((onLine[4] && onLine[3] && onLine[2] && onLine[1] && onLine[0]) || (onLine[4] && onLine[3] && onLine[2] && onLine[1] ) || (onLine[3] && onLine[2] && onLine[1]) || (onLine[2] && onLine[1]))
 #define PASTLINE (onLine[7] && onLine[0])
 
 #define PAST_RIGHT_TURN ((onLine[7] && onLine[6]) || (onLine[7]))
@@ -168,60 +169,92 @@ uint16_t thresh[kSensorCount];
 #define left_turn_t_line 7
 #define right_turn_t_line 8
 #define inline_line 9
+#define undefined_line 10
 
 //#define undefined_state??
 
 byte junctionState;
 byte lastJunctionState;
+byte confirmed_junction=0;
 
-// #define inline_section 0
-// #define T_section 1
-// #define left_T_section 2
-// #define right_T_section 3
-// #define right_section 4
-// #define left_section 5
-// #define cross_section 6
-// #define discontinuety_section 7
-// #define horizontal_section 8
-// #define vertical_section 9
-// #define unconfirmed_left_section 10
-// #define unconfirmed_right_section 11
+#define no_junction 0
+#define cross_junction 1 
+#define T_junction 2
+#define left_T_junction 3
+#define right_T_junction 4
+#define left_turn_junction 5
+#define right_turn_junction 6
+#define undefined_junction 7
 
 //I think we may be in grave need, of a flagging system.
 void fetchJunction()
 {
   if(lastJunctionState != junctionState)
   {
-    // if(lastJunctionState == horizontal_section && junctionState == vertical_section)
-    // {
-    //   junction_count++;
-    //   play_audio(audio_value_inc);
-    // } else    
-    // if(lastJunctionState == horizontal_section && junctionState == T_section)
-    // {
-    //   junction_count++;
-    //   play_audio(audio_value_dec);
-    // }else
-    // if(lastJunctionState == unconfirmed_left_section  && junctionState == left_section)
-    // {
-    //   junction_count++;
-    //   play_audio(audio_value_edit);
-    // }else 
-    // if(lastJunctionState == unconfirmed_left_section  && junctionState == left_T_section)
-    // {
-    //   junction_count++;
-    //   play_audio(audio_scroll_down);
-    // }else 
-    // if(lastJunctionState == unconfirmed_right_section  && junctionState == right_section)
-    // {
-    //   junction_count++;
-    //   play_audio(audio_scroll_up);
-    // }else 
-    // if(lastJunctionState == unconfirmed_right_section  && junctionState == right_T_section)
-    // {
-    //   junction_count++;
-    //   play_audio(audio_webCMD);
-    // }
+    
+    switch (lastJunctionState)
+    {
+
+    case horizontal_line:
+        switch (junctionState)
+        
+        {
+          case inline_line:
+            confirmed_junction= cross_junction;
+            break;
+          
+          case out_of_line:
+            confirmed_junction= T_junction;
+            break;
+
+          default:
+            confirmed_junction = undefined_junction;
+            break;
+          }
+      break;
+    
+    case unconfirmed_left_line:
+    switch (junctionState)
+    {
+    case left_turn_t_line:
+    confirmed_junction= left_T_junction;
+      break;
+    
+    case left_turn_line:
+    confirmed_junction=left_turn_junction;
+    break;
+
+    default:
+    confirmed_junction=undefined_junction;
+      break;
+    }
+    break;
+
+    case unconfirmed_right_line:
+    switch (junctionState)
+    {
+    case right_turn_t_line:
+    confirmed_junction= right_T_junction;
+      break;
+    
+    case right_turn_line:
+    confirmed_junction=right_turn_junction;
+    break;
+
+    default:
+    confirmed_junction=undefined_junction;
+      break;
+    }
+    break;
+
+      default:
+      confirmed_junction = no_junction;
+      break;
+    }
+    
+    performJunctionAction();
+
+    if(junctionState!=inline_line || junctionState!=out_of_line){play_audio(audio_value_inc);}
   }
 }
 
@@ -263,67 +296,8 @@ void fetchLinePose()
   if(PAST_LEFT_LINE)
   {junctionState=left_turn_t_line; }else 
   if(INLINE)
-  {junctionState=inline_line;} //holy verbosity solved
-
-
-/*
-BIG DAYS FOR DETECTING JUNCTIONS HELL YEA
-  if //Junction State detection
-  (
-    ( onLine[0] && onLine[1] && onLine[2] && onLine[3] && onLine[4] && onLine[5] && onLine[6] && onLine[7] ) ||
-    ( onLine[0] && onLine[1] && onLine[2] && onLine[3] && onLine[4] && onLine[5] && onLine[6] && onLine[7] ) ||
-    ( onLine[0] && onLine[1] && onLine[2] && onLine[3] && onLine[4] && onLine[5] && onLine[6] && onLine[7] ) 
-  )
-  {
-    
-  }
-*/
-// if 
-// (
-//   ( onLine[1] && onLine[2] && onLine[3] && onLine[4] && onLine[5] && onLine[6] ) ||
-//   ( onLine[1] && onLine[2] && onLine[3] && onLine[4] && onLine[5] ) ||
-//   ( onLine[2] && onLine[3] && onLine[4] && onLine[5] && onLine[6] )
-// ) { junctionState = horizontal_section; }else
-// if
-// (
-//   ( onLine[0] && onLine[1] && onLine[2] && onLine[3] && onLine[4] )||
-//   ( onLine[0] && onLine[1] && onLine[2] && onLine[3]) ||
-//   ( onLine[0] && onLine[1] && onLine[2] ) 
-// ) 
-// { junctionState = unconfirmed_left_section;} else
-// if
-// (
-//   ( onLine[3] && onLine[4] && onLine[5] && onLine[6] && onLine[7] ) ||
-//   ( onLine[4] && onLine[5] && onLine[6] && onLine[7] ) ||
-//   ( onLine[5] && onLine[6] && onLine[7] ) 
-// ) 
-// { junctionState = unconfirmed_right_section;} else
-// if
-// (
-//   ( onLine[0] && onLine[3] && onLine[7] ) ||
-//   ( onLine[0] && onLine[4] && onLine[7] ) ||
-//   ( onLine[0] && onLine[3] && onLine[4] && onLine[7] ) 
-// ){ junctionState = vertical_section;} else
-// if
-// (
-//   (  onLine[3] && onLine[7] ) ||
-//   ( onLine[4] && onLine[7] ) ||
-//   ( onLine[3] && onLine[4] && onLine[7] ) 
-// ){ junctionState = right_T_section;} else
-// if
-// (
-//   ( onLine[0] && onLine[3]  ) ||
-//   ( onLine[0] && onLine[4]  ) ||
-//   ( onLine[0] && onLine[3] && onLine[4]  ) 
-// ){ junctionState = left_T_section;} else
-// if
-// (
-//   ( (onLine[0] ||onLine[1])   && (onLine[6]||onLine[7]) ) // Add the 6th and 1st if needed
-// ){ junctionState = T_section;}else 
-
-// if((onLine[0] ||onLine[1])){junctionState = left_section;} else
-
-// if((onLine[6] ||onLine[7])){junction_count = right_section;}
+  {junctionState=inline_line;}else //holy verbosity solved
+  {junctionState=undefined_line;}
 
 fetchJunction();
 
@@ -333,10 +307,7 @@ lastJunctionState = junctionState;
 
 uint16_t read_line_TCRTase()
 {
-  // uint16_t weighted_pose;
-  // for(uint8_t i =0;i<kSensorCount;i++){
-  // weighted_pose+=sensorCal[i]*weight_array[i];
-  // }
+
   return (sensorCal[0]*weight_array[0]+sensorCal[1]*weight_array[1]+sensorCal[2]*weight_array[2]
     +sensorCal[3]*weight_array[3]+sensorCal[4]*weight_array[4]+sensorCal[5]*weight_array[5]+sensorCal[6]*weight_array[6]
     +sensorCal[7]*weight_array[7])/(sensorCal[0]+sensorCal[1]+sensorCal[2]+sensorCal[3]+sensorCal[4]+sensorCal[5]+sensorCal[6]+sensorCal[7]);
@@ -1224,6 +1195,47 @@ void calibrate_motors()
 {
 }
 
+//Junction Engine
+void performJunctionAction() //blackbox trigger hell yeah!
+{
+  writeRGB(100,0,0);
+  switch (confirmed_junction)
+  {
+
+  case cross_junction:
+    play_audio(audio_connected);
+  break;
+  
+  case T_junction: //turn right
+   play_audio(audio_disconnected);
+  break;  
+
+  case left_T_junction:
+    play_audio(audio_fail);
+    break;
+  
+  case right_T_junction:
+  play_audio(audio_cycle);
+  break;
+
+  case left_turn_junction: //some spice here
+  play_audio(audio_value_inc);
+  break;
+  
+  case right_turn_junction: //some spice here
+  play_audio(audio_value_dec);
+  break;
+
+  default:
+  //:)
+    break;
+  }
+
+  // confirmed_junction = no_junction;
+}
+
+
+
 // IO stuff
 unsigned long IO_interval;
 
@@ -1706,11 +1718,11 @@ void menu_action()
           break;
 
         case 14:
-          line_kd += 0.1;
+          line_kd += 0.01;
           break;
 
         case 15:
-          line_ki += 0.1;
+          line_ki += 0.01;
           break;
 
         case 16:
@@ -1858,12 +1870,12 @@ void menu_action()
       }
     case 11: // {"LinePoseB:","LinePoseW:","LineMode:","DistanceL:","DistanceR:","DistanceF:","Intersection:"} //7 Elements.
       page_index = 0;
-      elements_index = 1;
+      elements_index = 4;
       break;
 
     case 12:
-      page_index = 0;
-      elements_index = 1;
+      page_index = 7;
+      elements_index = 2;
       break;
 
     case 14:
@@ -2066,6 +2078,85 @@ void display()
   {
     fetchLinePose();
     drawSensorArray(onLine);
+    ocursor(5,10);
+    switch (confirmed_junction)
+    {
+    case left_T_junction:
+    oprint("left T");
+      break;
+    
+      case left_turn_junction:
+      oprint("left Turn");
+      break;
+      case right_T_junction:
+      oprint("right T");
+      break;
+      case right_turn_junction:
+      oprint("right Turn");
+      break;
+      case cross_junction:
+      oprint("Cross");
+      break;
+      case T_junction:
+      oprint("T junction");
+      break;
+      case no_junction:
+      oprint("no junction");
+      break;
+    
+    default:
+    oprint("undefined junction");
+      break;
+    }
+
+    ocursor(32,25);
+    switch (junctionState)
+    {
+    case inbox_line:
+      oprint("in box");
+    break;
+    
+    case out_of_line:
+        oprint("out of line");
+      break;
+    
+      case unconfirmed_right_line:
+      oprint("unconfirmed right");
+      break;
+
+      case unconfirmed_left_line:
+      oprint("unconfirmed left");
+      break;
+
+      case horizontal_line:
+      oprint("Horizontal");
+      break;
+
+      case left_turn_line:
+      oprint("left turn");
+      break;
+
+      case right_turn_line:
+      oprint("right turn");
+      break;
+
+      case left_turn_t_line:
+      oprint("left turn T");
+      break;
+
+      case right_turn_t_line:
+      oprint("right turn T");
+      break;
+
+      case inline_line:
+      oprint("IN LINE");
+      break;
+
+    default:
+    oprint("undefined line");
+      break;
+    }
+
   }
   else
   {
