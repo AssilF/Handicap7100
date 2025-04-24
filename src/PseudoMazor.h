@@ -44,6 +44,7 @@
 #define left_IR  A11
 #define right_IR A10
 
+
 // #define using_TFT 1
 #define using_OLED 1
 
@@ -64,10 +65,15 @@
 #define red_LED_pin 
 
 #define MAX_DISTANCE 60 //60cm
-
+void fetchLinePose();
 void performJunctionAction();
 
 void setDirection(byte dir);
+
+void performKick();
+void kick_left();
+void kick_right();
+void RAM();
 
 void getWallDistances(); //retrieves the distances 
 void getIntersectionFromDistance();

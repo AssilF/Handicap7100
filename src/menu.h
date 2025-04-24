@@ -3,7 +3,7 @@
 #define menu_page_index_count 18 //Two pages don't have elements but they display images and such;
 #define menu_index_count 8
 
-byte index_name_counts[menu_page_index_count]={6,7,6,6,6,5,3,4,4,3,0,6,0,7, 3  , 5 , 6,7}; //including 0
+byte index_name_counts[menu_page_index_count]={6,7,6,6,6,5,3,4,4,3,0,6,0,7, 3  , 5 , 7,7}; //including 0
 int elements_index;
 byte page_index;
 bool isModifying;
@@ -28,12 +28,12 @@ String index_name[menu_page_index_count][menu_index_count] =
     {"Left Counts: ","Right Counts: ","Left Travel: ","Right Travel: ","Angel: "}, //8 
     {"+","rec","-","back"}, //9
     {}, //10
-    {"LinePoseB:","LinePoseW:","LineMode:","DistanceL:","DistanceR:","DistanceF:","Effec pose:"} //7 Elements. 11
+    {"LinePoseB:","LinePoseW:","LineMode:","DistanceL:","DistanceR:","DistanceF:","Effec pose: "} //7 Elements. 11
     ,{}, //12
     {"IR0: ","IR1: ","IR2: ","IR3: ","IR4: ","IR5: ","IR6: ","IR7: "}, //13
     {"Line Calibration","Line PID","kick settings","Back"}, //14 add intersection and junction options here
     {"Threshold Mode: "/*Normal/Raw*/,"Weight Mode: "/*QTR/TCRTase*/,"Hold Time: "/*Phantom Shi*/,"Threshold: "/*Normalt threshold*/,"Sample count: ","back"}, //15 Weight to whether to use the QTR Library or my own Approach, for now I'll only care about hold time LoL
-    {"L-Kp:","L-Kd: ","L-Ki: ","L-BaseS: ","PID interval: ", " Zone: ","back"} //16 Added Interval
-    ,{"Deadtime dur: ","Kick Angle: ","Kick Speed: ", "Ram distance:","kick left","kick right","Ram","back"}//17, kick settings.
+    {"L-Kp:","L-Kd: ","L-Ki: ","L-BaseS: ","PID interval: ", " Zone: ", "Kickmode ","back"} //16 Added Interval
+    ,{"Deadtime dur: ","Kick Angle: ","Kick Speed: ", "Ram distance: ","kick left","kick right","Ram","back"}//17, kick settings.
 };//note on adding an experimental speed dependency on the phantom time.
 

@@ -96,7 +96,7 @@ static const byte blue[rgb_IDs][rgb_partitions] = {
 
 static const unsigned long rgbMillis[rgb_IDs][rgb_partitions] = {
   // static: no timing
-  {0,0,0,0,0,0,0,0},
+  {400,0,0,0,0,0,0,0},
   // green pulse speed
   {250,250,250,250,250,250,250,250},
   // purple pulse speed
