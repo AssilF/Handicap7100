@@ -205,7 +205,7 @@ void performKick()
       else
       {
         fetchLinePose();
-        if ( !OUTLINE)
+        if (INLINE)
         {
           isKicking = 0;
         }
@@ -229,8 +229,8 @@ QTRSensors lineArray;
 unsigned long CALIBRATION_TIME = 5000; // Calibration duration in ms
 
 unsigned int linePIDInterval = 20;
-int line_base_speed = 110;
-float line_kp = 1.8;
+int line_base_speed = 80;
+float line_kp = 1.5;
 float line_ki = 0.0;
 float line_kd = 0.01;
 double center;
@@ -670,7 +670,7 @@ int bias;
 
 void drive(int bias) {
   // if error so large we want pure spin:
-  if (abs(bias) > (exagerate_kp ? 60 : diminish_kp ? 100 : kp_kick1 ? 130 : kp_kick2? 80 :  line_base_speed) +20) {
+  if (abs(bias) > (exagerate_kp ? 60 : diminish_kp ? 100 : kp_kick1 ? 130 : kp_kick2? 80 :  line_base_speed)) {
     //rotationFlag =1;
     int spinSpeed = constrain(abs(bias), 0, 255);
     if (bias > 0) {
