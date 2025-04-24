@@ -31,21 +31,6 @@ hardware design to experiment with code and behaviour before improving hardware 
 */
 
 //
-
-//these weird variables came from desperation and 3 sleepless days
-bool exagerate_kp=0; //KP = 2, base speed = 60
-bool diminish_kp=0;  //KP=0.6 base speed = 100
-bool arm_pre_kick=0;
-byte pre_kick_counts=0;
-
-bool arm_first_kick=0;
-
-bool arm_second_kick=0; // at second kick Kp=1.6, base speed = 80
-
-bool kill_kicks =0;
-bool left_bias=0;
-bool right_bias=0;
-
 U8G2_SSD1306_128X64_NONAME_F_HW_I2C oled(U8G2_R0);
 // Command Defs=================================================================
 #define oprint(text) oled.print(text)
@@ -117,7 +102,7 @@ double angle_to_counts(float angle)
 // The KICK system >:((((((((((
 int kick_angle = 65;
 
-int ram_distance =  120;
+int ram_distance =  100;
 
 byte kick_speed = 80;
 bool isKicking = 0;
@@ -139,15 +124,6 @@ void kick_left()
 
 void kick_right()
 {
-  if(arm_pre_kick)
-  {
-    pre_kick_counts++;
-  }
-  if(pre_kick_counts>=2)
-  {
-    arm_pre_kick = 0;
-    exagerate_kp = 0;
-  }
   RAM();
   while(isKicking){performKick();};//حالة شاذة من أجل الرام و عدم النوم _(يتم الهبال)
   isKicking = 1;
@@ -174,25 +150,10 @@ void RAM()
   analogWrite(right_motor_pwm_pin, kick_speed);
 }
 
-bool kp_kick1 =0;
-bool kp_kick2 =0;
-bool waskicking;
 void performKick()
 {
   if (isKicking)
   {
-    if(arm_first_kick)
-    {
-      kp_kick1 = 1;
-      arm_first_kick =0;
-    }// at second kick Kp=1.6, base speed = 80
-    else if(arm_second_kick)
-    {
-      kp_kick2 = 1;
-      left_bias = 0;
-      arm_second_kick = 0;
-    }
-
     if (!kickingmode)
     {
       if (!kickMode)
@@ -205,7 +166,7 @@ void performKick()
       else
       {
         fetchLinePose();
-        if (INLINE)
+        if (!OUTLINE)
         {
           isKicking = 0;
         }
@@ -229,10 +190,10 @@ QTRSensors lineArray;
 unsigned long CALIBRATION_TIME = 5000; // Calibration duration in ms
 
 unsigned int linePIDInterval = 20;
-int line_base_speed = 80;
-float line_kp = 1.5;
+int line_base_speed = 110;
+float line_kp = 1.8;
 float line_ki = 0.0;
-float line_kd = 0.01;
+float line_kd = 0.02;
 double center;
 float line_integral;
 unsigned long line_error_time;
@@ -663,34 +624,28 @@ void drive_right(int speed)
 }
 int bias;
 //upgraded to spin in place stuff I guess.
- //honestly now that I am looking at it, a struct would make a good piece of code
- //only if I had more time. . .
-
-
 
 void drive(int bias) {
   // if error so large we want pure spin:
-  if (abs(bias) > (exagerate_kp ? 60 : diminish_kp ? 100 : kp_kick1 ? 130 : kp_kick2? 80 :  line_base_speed)) {
+  if (abs(bias) > line_base_speed) {
     //rotationFlag =1;
     int spinSpeed = constrain(abs(bias), 0, 255);
     if (bias > 0) {
       // turn right in place: left forward, right backward
-      // drive_left( -spinSpeed);
-      // drive_right(spinSpeed);
-      if(!kill_kicks){
-      kick_left();}
+      drive_left( -spinSpeed);
+      drive_right(spinSpeed);
+      //kick_left();
     } else {
       // turn left in place: left backward, right forward
-      // drive_left(spinSpeed);
-      // drive_right( -spinSpeed);
-      if(!kill_kicks){
-      kick_right();}//maybe the kick has good use after all
+      drive_left(spinSpeed);
+      drive_right( -spinSpeed);
+      //kick_right();//maybe the kick has good use after all
     }
   }
   else {
     // normal blended drive:
-    int leftSpeed  = constrain( (exagerate_kp ? 60 : diminish_kp ? 100 : kp_kick1 ? 130 : kp_kick2? 80 :  line_base_speed) + bias, 0, 255);
-    int rightSpeed = constrain( (exagerate_kp ? 60 : diminish_kp ? 100 : kp_kick1 ? 130 : kp_kick2? 80 :  line_base_speed) - bias, 0, 255);
+    int leftSpeed  = constrain(line_base_speed + bias, 0, 255);
+    int rightSpeed = constrain(line_base_speed - bias, 0, 255);
     drive_left(leftSpeed);
     drive_right(rightSpeed);
   }
@@ -700,7 +655,7 @@ void performLinePid(float error, float dt)
 {
   line_integral += error * dt;
   float derivative = (error - line_previousError) / dt;
-  float pidOutput = (exagerate_kp? 2.0 : diminish_kp? 0.6 : kp_kick1 ? 1.0 : kp_kick2 ? 1.6 : line_kp) * error + line_ki * line_integral + line_kd * derivative;
+  float pidOutput = line_kp * error + line_ki * line_integral + line_kd * derivative;
   line_previousError = error;
 
   // Scale the PID output to get a bias.
@@ -1333,30 +1288,24 @@ void calibrate_motors()
 
 // Junction Engine
 void performJunctionAction() // blackbox trigger hell yeah!
-{ //We need a system to prioritize junction detection over the kicking system.
+{ //We need a system to prioritize junction detection over the kicking system. aka junctions invoke the kicking !
   switch (confirmed_junction)
   {
-  case cross_junction:
+  case cross_junction: //apparently all crosses RAM except the last, we gotta turn off kicking entirely.
     play_audio(audio_scroll_up);
     switch (cross_count)
     {
     case cross_milestone_1:
-    exagerate_kp=1;
-    arm_pre_kick=1;
     light(0);
     cross_count++;
       break;
     
-      case cross_milestone_2: //Remove the KP Exageration and ARM the next kick's KP bias
-      exagerate_kp =0;
-      arm_first_kick=1; //it's a right kick, gives us: Kp = 1, L-base S= 130 AT kick
+      case cross_milestone_2:
     light(1);
     cross_count++;
       break;
 
-      case cross_milestone_3: //and diminish Kp
-      kill_kicks = 1;
-      diminish_kp = 1;
+      case cross_milestone_3:
     light(2);
     cross_count++;
       break;
@@ -1368,30 +1317,22 @@ void performJunctionAction() // blackbox trigger hell yeah!
     break;
 
   case T_junction:
-    
+
     play_audio(audio_scroll_down);
 
     switch (t_count)
     {
     case t_milestone_1:
-    kp_kick1 =0;
-    kick_left();
-    left_bias=1;
-    arm_second_kick=1;
     t_count++;
     light(3);
       break;
     
       case t_milestone_2:
-      kick_left();
-      right_bias=1; //consider removing the bias if the kick ignores the T section
       t_count++;
       light(4);
       break;
 
       case t_milestone_3:
-      kick_right();
-      right_bias = 0;
       t_count++;
       light(8);
       break;
@@ -1401,6 +1342,7 @@ void performJunctionAction() // blackbox trigger hell yeah!
     }
     junction_count++;
     break;
+
     // case cross_junction:
     //   play_audio(audio_connected);
     // break;
@@ -3035,7 +2977,7 @@ void loop()
               position = (LineMode ? lineArray.readLineBlack(sensorValues) : lineArray.readLineWhite(sensorValues));
             }
 
-            center = 3500 - 500* left_bias + 500*right_bias;
+            center = 3500;
             line_error = (float)position - center;
             // Serial.print("Error: ");
             // Serial.println(error);
@@ -3062,18 +3004,6 @@ void loop()
   {
     digitalWrite(motor_standby_pin, 0);
     first_run = 1;
-
-    exagerate_kp=0; //KP = 2, base speed = 60
-    diminish_kp=0;  //KP=0.6 base speed = 100
-    arm_first_kick=0;
-    arm_second_kick=0; // at second kick Kp=1.6, base speed = 80
-    kill_kicks =0;
-    left_bias=0;
-    right_bias=0;
-
-    t_count = 0;
-    cross_count = 0;
-
   }
   performLightFeedback();
   performAudioFeedback();
